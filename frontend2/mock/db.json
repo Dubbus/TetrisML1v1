@@ -1,0 +1,28 @@
+{
+  "scores": [
+    {
+      "id": 1,
+      "username": "alice",
+      "score": 1200,
+      "date": "2025-10-01"
+    },
+    {
+      "id": 2,
+      "username": "bob",
+      "score": 900,
+      "date": "2025-10-02"
+    },
+    {
+      "name": "smoke-test",
+      "score": 38,
+      "timestamp": "2025-10-25T19:51:43.614Z",
+      "id": 3
+    },
+    {
+      "name": "smoke-test",
+      "score": 8759,
+      "timestamp": "2025-10-25T19:52:43.390Z",
+      "id": 4
+    }
+  ]
+}
