@@ -1,3 +1,30 @@
+clouddev (frontend)
+
+This folder contains the Vite + React frontend used in the TetrisML1v1 project.
+
+Quick start (from repo root):
+
+  npm run install:all
+  npm run dev
+
+Or from this folder:
+
+  cd frontend/clouddev
+  npm install
+  npm run dev
+
+Dev notes:
+- Default dev port is 5173; Vite will use the next available port if that one is taken.
+- To pin a port:
+  npm run dev -- --port 5176 --host 127.0.0.1
+- To expose on LAN:
+  npm run dev -- --host
+
+Files of interest:
+- `src/` - React app (App.tsx, main.tsx)
+- `aws-exports.js` - Amplify configuration
+- `mutations.ts` / `queries.ts` - GraphQL documents
+- `saveScore.js` / `getScores.js` - placeholder scripts (empty)
 # React + TypeScript + Vite
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.

@@ -1,0 +1,9 @@
+{
+  "name": "tetrisml-root",
+  "private": true,
+  "scripts": {
+    "dev": "npm --prefix ./frontend/clouddev run dev",
+    "build": "npm --prefix ./frontend/clouddev run build",
+    "install:all": "npm --prefix ./frontend/clouddev install"
+  }
+}
