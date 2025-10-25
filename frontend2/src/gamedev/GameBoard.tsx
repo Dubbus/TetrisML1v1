@@ -94,6 +94,11 @@ export default function GameBoard(){
   const combo2 = useRef(0)
   const b2b1 = useRef(false)
   const b2b2 = useRef(false)
+  // input repeat/interval refs
+  const horizontalInterval = useRef<number|undefined>(undefined)
+  const horizontalDir = useRef<'left'|'right'|null>(null)
+  const softInterval = useRef<number|undefined>(undefined)
+  const startTime = useRef<number>(Date.now())
 
   const [score1,setScore1] = useState(0)
   const [score2,setScore2] = useState(0)
@@ -158,9 +163,10 @@ export default function GameBoard(){
   useEffect(()=> draw(canvas1.current, grid1, piece1), [grid1, piece1])
   useEffect(()=> draw(canvas2.current, grid2, piece2), [grid2, piece2])
 
-  function lockAndClear(player:number, p:Piece){
+  // reason: 'soft'|'hard'|'gravity' - affects spawn timing
+  function lockAndClear(player:number, p:Piece, reason:'soft'|'hard'|'gravity' = 'gravity'){
     // compute garbage using guideline rules (basic: single/double/triple/tetris, combos, back-to-back, all clear)
-    function computeGarbageFor(player:number, cleared:number, newGrid:any[][]){
+  function computeGarbageFor(player:number, cleared:number, newGrid:any[][]){
       // base by cleared lines
       let base = 0
       let qualifiesB2B = false
@@ -170,7 +176,7 @@ export default function GameBoard(){
       else if(cleared===1) base = 0
 
       // all clear detection
-      const allClear = !newGrid.some((row:any[])=> row.some((cell:any)=>!!cell))
+  const allClear = !newGrid.some((row:any[])=> row.some((cell:any)=>!!cell))
       if(allClear && cleared>0){ base += 7; qualifiesB2B = true }
 
       // combo bonus rules: (simple mapping from guideline)
@@ -192,57 +198,104 @@ export default function GameBoard(){
 
     if(player===1){
       setGrid1(g=>{
+        const before = g.map(r=>r.slice())
         const ng = lockPieceToGrid(g,p)
+        // find which rows will be cleared and which columns were filled by this piece
+        const willClear: number[] = []
+        for(let r=0;r<ROWS;r++){
+          if(ng[r].every((cell:any)=>!!cell)) willClear.push(r)
+        }
         const res = clearLines(ng)
         if(res.cleared) setScore1(s=>s + res.cleared*100)
 
         const info = computeGarbageFor(1, res.cleared, res.grid)
-        if(info.total) receiveGarbage(2, info.total)
+        // determine hole column based on columns in cleared rows that were filled by this piece
+        let hole = Math.max(0, Math.min(COLS-1, p.x + Math.floor((p.shape[0]?.length||1)/2)))
+        if(willClear.length>0){
+          // examine the lowest cleared row and find columns where before was empty but ng had filled
+          const row = willClear[willClear.length-1]
+          const filledByPiece: number[] = []
+          for(let c=0;c<COLS;c++){
+            if(!before[row][c] && ng[row][c]) filledByPiece.push(c)
+          }
+          if(filledByPiece.length>0) hole = filledByPiece[Math.floor(filledByPiece.length/2)]
+        }
+
+        if(info.total) {
+          // send garbage after specified frame delay handled inside receiveGarbage
+          receiveGarbage(2, info.total, hole)
+        }
 
         // update combo and b2b refs
         if(res.cleared>0) combo1.current = combo1.current + 1
         else combo1.current = 0
         b2b1.current = info.qualifies ? true : false
 
-        return res.grid
-      })
-      spawn(1)
-      setTimeout(()=>{
-        if(grid1[0].some((cell:any)=>!!cell)){
+        // check for top-row occupation on this updated grid and end game immediately if needed
+        if(res.grid[0].some((cell:any)=>!!cell)){
           setRunning1(false); setGameOver(true); setWinner('opponent')
         }
         if(grid2[0].some((cell:any)=>!!cell)){
           setRunning1(false); setRunning2(false); setGameOver(true); setWinner('player')
         }
-      }, 0)
+
+        // spawn behavior: immediate for 'hard' and 'gravity', delayed 500ms for 'soft'
+        if(!gameOver){
+          if(reason==='soft'){
+            setTimeout(()=>{ if(!gameOver) spawn(1) }, 500)
+          } else {
+            spawn(1)
+          }
+        }
+
+        return res.grid
+      })
     } else {
       setGrid2(g=>{
+        const before = g.map(r=>r.slice())
         const ng = lockPieceToGrid(g,p)
+        const willClear: number[] = []
+        for(let r=0;r<ROWS;r++){
+          if(ng[r].every((cell:any)=>!!cell)) willClear.push(r)
+        }
         const res = clearLines(ng)
         if(res.cleared) setScore2(s=>s + res.cleared*100)
 
         const info = computeGarbageFor(2, res.cleared, res.grid)
-        if(info.total) receiveGarbage(1, info.total)
+        let hole = Math.max(0, Math.min(COLS-1, p.x + Math.floor((p.shape[0]?.length||1)/2)))
+        if(willClear.length>0){
+          const row = willClear[willClear.length-1]
+          const filledByPiece: number[] = []
+          for(let c=0;c<COLS;c++){
+            if(!before[row][c] && ng[row][c]) filledByPiece.push(c)
+          }
+          if(filledByPiece.length>0) hole = filledByPiece[Math.floor(filledByPiece.length/2)]
+        }
+        if(info.total) receiveGarbage(1, info.total, hole)
 
         if(res.cleared>0) combo2.current = combo2.current + 1
         else combo2.current = 0
         b2b2.current = info.qualifies ? true : false
 
-        return res.grid
-      })
-      spawn(2)
-      setTimeout(()=>{
-        if(grid2[0].some((cell:any)=>!!cell)){
+        if(res.grid[0].some((cell:any)=>!!cell)){
           setRunning2(false); setGameOver(true); setWinner('player')
         }
         if(grid1[0].some((cell:any)=>!!cell)){
           setRunning1(false); setRunning2(false); setGameOver(true); setWinner('opponent')
         }
-      }, 0)
+
+        if(!gameOver){
+          if(reason==='soft') setTimeout(()=>{ if(!gameOver) spawn(2) }, 500)
+          else spawn(2)
+        }
+
+        return res.grid
+      })
     }
   }
 
   function spawn(player:number){
+    if(gameOver) return
     if(player===1){
       setQueue1(q=>{
         const [, ...rest] = q
@@ -262,52 +315,118 @@ export default function GameBoard(){
     }
   }
 
-  function receiveGarbage(player:number, lines:number){
-    const make = ()=>{ const hole = Math.floor(Math.random()*COLS); return Array.from({length:COLS}, (_,i)=> i===hole?0:'G:#000') }
-    if(player===1) setGrid1(g=>{ const ng = g.map(r=>r.slice()); for(let i=0;i<lines;i++){ ng.shift(); ng.push(make()) } return ng })
-    else setGrid2(g=>{ const ng = g.map(r=>r.slice()); for(let i=0;i<lines;i++){ ng.shift(); ng.push(make()) } return ng })
-    // check top rows after applying garbage
-    setTimeout(()=>{
-      if(player===1){ if(grid1[0].some((cell:any)=>!!cell)){ setRunning1(false); setGameOver(true); setWinner('opponent') } }
-      else { if(grid2[0].some((cell:any)=>!!cell)){ setRunning1(false); setRunning2(false); setGameOver(true); setWinner('player') } }
-    }, 0)
+  // receiveGarbage now supports delayed application (frames) and aligned holes every 2 rows
+  function receiveGarbage(player:number, lines:number, holeCol?:number){
+    // frame delay: 20 frames (approx 333ms at 60fps)
+    const frameDelay = Math.round((1000/60) * 20)
+    const apply = ()=>{
+      const makeRow = (hole:number)=> Array.from({length:COLS}, (_,i)=> i===hole?0:'G:#000')
+      if(player===1){
+        setGrid1(g=>{
+          const ng = g.map(r=>r.slice())
+          // build rows with aligned holes per 2-row groups
+          for(let i=0;i<lines;i+=2){
+            const hole = (typeof holeCol === 'number') ? holeCol : Math.floor(Math.random()*COLS)
+            // first of the pair
+            ng.shift(); ng.push(makeRow(hole))
+            // second of the pair if exists
+            if(i+1<lines){ ng.shift(); ng.push(makeRow(hole)) }
+          }
+          // check top row
+          if(ng[0].some((cell:any)=>!!cell)){
+            setRunning1(false); setGameOver(true); setWinner('opponent')
+          }
+          return ng
+        })
+      } else {
+        setGrid2(g=>{
+          const ng = g.map(r=>r.slice())
+          for(let i=0;i<lines;i+=2){
+            const hole = (typeof holeCol === 'number') ? holeCol : Math.floor(Math.random()*COLS)
+            ng.shift(); ng.push(makeRow(hole))
+            if(i+1<lines){ ng.shift(); ng.push(makeRow(hole)) }
+          }
+          if(ng[0].some((cell:any)=>!!cell)){
+            setRunning1(false); setRunning2(false); setGameOver(true); setWinner('player')
+          }
+          return ng
+        })
+      }
+    }
+    setTimeout(apply, frameDelay)
   }
 
-  // gravity simple
+  // gravity for player; slow speed-up over time. Soft-drop handled separately at a constant rate.
   useEffect(()=>{
     if(!running1) return
-    const speed = softDrop1 ? 50 : 450
-    const id = setInterval(()=>{
+  const base = 800
+    let mounted = true
+    let timer: number | undefined
+    const tick = ()=>{
+      const elapsed = (Date.now() - startTime.current)/1000
+      // very small speedup over time: -5ms every 10s
+  const speed = Math.max(200, base - Math.floor(elapsed/10)*2)
+      // single gravity step
       setPiece1(prev=>{
         const moved = {...prev, y: prev.y+1}
         if(collide(grid1, moved)){
-          lockAndClear(1, prev)
+          lockAndClear(1, prev, 'gravity')
           const st = {...(queue1[0] || randomTetromino()), x:3, y:-2}
           if(collide(grid1, st)) setRunning1(false)
           return st
         }
         return moved
       })
-    }, speed)
-    return ()=>clearInterval(id)
-  },[grid1, running1, queue1, softDrop1])
+      if(mounted) timer = window.setTimeout(tick, speed) as unknown as number
+    }
+    timer = window.setTimeout(tick, 0) as unknown as number
+    return ()=>{ mounted = false; if(timer) clearTimeout(timer) }
+  },[grid1, running1, queue1])
 
   useEffect(()=>{
     if(!running2) return
-    const id = setInterval(()=>{
+    const base = 800
+    let mounted = true
+    let timer: number | undefined
+    const tick = ()=>{
+      const elapsed = (Date.now() - startTime.current)/1000
+      const speed = Math.max(200, base - Math.floor(elapsed/10)*2)
       setPiece2(prev=>{
         const moved = {...prev, y: prev.y+1}
         if(collide(grid2, moved)){
-          lockAndClear(2, prev)
+          lockAndClear(2, prev, 'gravity')
           const st = {...(queue2[0] || randomTetromino()), x:3, y:-2}
           if(collide(grid2, st)) setRunning2(false)
           return st
         }
         return moved
       })
-    }, 450)
-    return ()=>clearInterval(id)
+      if(mounted) timer = window.setTimeout(tick, speed) as unknown as number
+    }
+    timer = window.setTimeout(tick, 0) as unknown as number
+    return ()=>{ mounted = false; if(timer) clearTimeout(timer) }
   },[grid2, running2, queue2])
+
+  // soft-drop: constant-rate separate interval started on keydown and stopped on keyup
+  useEffect(()=>{
+    if(!running1) return
+    let id: number | undefined
+    if(softDrop1){
+      id = window.setInterval(()=>{
+        setPiece1(prev=>{
+          const moved = {...prev, y: prev.y+1}
+          if(collide(grid1,moved)){
+            // lock if landing (soft drop -> delayed spawn)
+            lockAndClear(1, prev, 'soft')
+            setSoftDrop1(false)
+            return prev
+          }
+          return moved
+        })
+      }, 50) as unknown as number
+    }
+    return ()=>{ if(id) clearInterval(id) }
+  },[softDrop1, running1, grid1, queue1])
 
   // controls (WASD and Arrow keys both supported). Prevent default for space/arrow to stop page scroll.
   useEffect(()=>{
@@ -317,11 +436,25 @@ export default function GameBoard(){
       const k = typeof raw === 'string' ? raw.toLowerCase() : raw
       // prevent default for space and arrow keys
       if(k === ' ' || k.startsWith('arrow')) e.preventDefault()
-
       if(k==='a' || k==='arrowleft'){
-        setPiece1(prev=>{ const moved = {...prev, x: prev.x-1}; if(collide(grid1,moved)) return prev; return moved })
+        // start immediate left move and begin repeat interval
+        if(horizontalDir.current !== 'left'){
+          horizontalDir.current = 'left'
+          setPiece1(prev=>{ const moved = {...prev, x: prev.x-1}; if(collide(grid1,moved)) return prev; return moved })
+          if(horizontalInterval.current) clearInterval(horizontalInterval.current)
+          horizontalInterval.current = window.setInterval(()=>{
+            setPiece1(prev=>{ const moved = {...prev, x: prev.x-1}; if(collide(grid1,moved)) return prev; return moved })
+          }, 80) as unknown as number
+        }
       } else if(k==='d' || k==='arrowright'){
-        setPiece1(prev=>{ const moved = {...prev, x: prev.x+1}; if(collide(grid1,moved)) return prev; return moved })
+        if(horizontalDir.current !== 'right'){
+          horizontalDir.current = 'right'
+          setPiece1(prev=>{ const moved = {...prev, x: prev.x+1}; if(collide(grid1,moved)) return prev; return moved })
+          if(horizontalInterval.current) clearInterval(horizontalInterval.current)
+          horizontalInterval.current = window.setInterval(()=>{
+            setPiece1(prev=>{ const moved = {...prev, x: prev.x+1}; if(collide(grid1,moved)) return prev; return moved })
+          }, 80) as unknown as number
+        }
       } else if(k==='s' || k==='arrowdown'){
         // start soft drop
         setSoftDrop1(true)
@@ -330,30 +463,11 @@ export default function GameBoard(){
       } else if(k==='w' || k==='arrowup'){
         setPiece1(prev=> tryRotate(grid1, prev))
       } else if(k===' '){
-        // hard drop implemented synchronously to immediately show next piece
-        // compute landing
+        // hard drop: compute landing and use lockAndClear so garbage & scoring follow same path
         const p = piece1
         let landing = {...p}
         while(!collide(grid1, {...landing, y: landing.y+1})) landing.y++
-        // lock and clear synchronously (functional update)
-        setGrid1(g=>{
-          const ng = lockPieceToGrid(g, landing)
-          const res = clearLines(ng)
-          if(res.cleared) setScore1(s=>s + res.cleared*100)
-          // compute garbage using existing lockAndClear logic
-          // small inline compute (reuse computeGarbageFor from lockAndClear area if needed)
-          // send simple garbage equal to cleared for now (detailed computed in lockAndClear path)
-          if(res.cleared) receiveGarbage(2, res.cleared)
-          return res.grid
-        })
-        // advance queue immediately
-        setQueue1(q=>{
-          const [, ...rest] = q
-          const next = {...rest[0] || randomTetromino(), x:3, y:-2}
-          setPiece1(next)
-          setHoldUsed1(false)
-          return [...rest, {...randomTetromino(), x:3, y:-2}]
-        })
+  lockAndClear(1, landing, 'hard')
       } else if(k==='c'){
         setPiece1(prev=>{
           if(holdUsed1) return prev
@@ -367,6 +481,11 @@ export default function GameBoard(){
     function onKeyUp(e:KeyboardEvent){
       const k = (typeof e.key === 'string') ? e.key.toLowerCase() : e.key
       if(k==='s' || k==='arrowdown') setSoftDrop1(false)
+      if(k==='a' || k==='arrowleft' || k==='d' || k==='arrowright'){
+        // stop horizontal repeat
+        if(horizontalInterval.current) { clearInterval(horizontalInterval.current); horizontalInterval.current = undefined }
+        horizontalDir.current = null
+      }
     }
 
     window.addEventListener('keydown', onKey, { passive: false })
@@ -388,9 +507,10 @@ export default function GameBoard(){
   }
 
   return (
-    <div>
+    <div style={{display:'flex', justifyContent:'center'}}>
       <div style={{marginBottom:8}}>
         <button onClick={()=>{
+          startTime.current = Date.now()
           setGrid1(makeEmptyGrid()); setGrid2(makeEmptyGrid());
           setQueue1(createQueue()); setQueue2(createQueue());
           setPiece1(createStart()); setPiece2(createStart());
@@ -447,6 +567,7 @@ export default function GameBoard(){
           <div style={{color:'#fff', textAlign:'center'}}>
             <h2>{winner==='player'? 'You Win!' : winner==='opponent'? 'You Lose' : 'Draw'}</h2>
             <button onClick={()=>{
+              startTime.current = Date.now()
               setGrid1(makeEmptyGrid()); setGrid2(makeEmptyGrid());
               setQueue1(createQueue()); setQueue2(createQueue());
               setPiece1(createStart()); setPiece2(createStart());
