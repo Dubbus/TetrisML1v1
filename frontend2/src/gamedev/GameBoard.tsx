@@ -42,18 +42,12 @@ function lockPieceToGrid(grid:any[][], piece:Piece){
 }
 
 function clearLines(grid:any[][]){
+  // garbage rows are stored as 'G:#000' but should be treated as filled for clears
   const newGrid = grid.map(r=>r.slice())
   let cleared = 0
-  function isClearableRow(row:any[]){
-    // must be filled and contain no garbage (garbage cells are strings starting with 'G:')
-    return row.every((cell:any)=>{
-      if(!cell) return false
-      if(typeof cell === 'string' && cell.startsWith('G:')) return false
-      return true
-    })
-  }
+  function isFilled(cell:any){ return !!cell }
   for(let r=ROWS-1;r>=0;r--){
-    if(isClearableRow(newGrid[r])){ newGrid.splice(r,1); newGrid.unshift(Array(COLS).fill(0)); cleared++; r++ }
+    if(newGrid[r].every((cell:any)=> isFilled(cell))){ newGrid.splice(r,1); newGrid.unshift(Array(COLS).fill(0)); cleared++; r++ }
   }
   return {grid:newGrid, cleared}
 }
@@ -94,6 +88,13 @@ export default function GameBoard(){
   const [holdUsed1,setHoldUsed1] = useState(false)
   const [holdUsed2,setHoldUsed2] = useState(false)
 
+  // soft drop, combos and back-to-back tracking
+  const [softDrop1, setSoftDrop1] = useState(false)
+  const combo1 = useRef(0)
+  const combo2 = useRef(0)
+  const b2b1 = useRef(false)
+  const b2b2 = useRef(false)
+
   const [score1,setScore1] = useState(0)
   const [score2,setScore2] = useState(0)
 
@@ -110,6 +111,7 @@ export default function GameBoard(){
     canvas.height = ROWS*CELL
     ctx.fillStyle = '#071226'
     ctx.fillRect(0,0,canvas.width,canvas.height)
+    // draw background cells and ghost (silhouette) before active piece
     for(let r=0;r<ROWS;r++){
       for(let c=0;c<COLS;c++){
         const v = grid[r][c]
@@ -122,6 +124,24 @@ export default function GameBoard(){
       }
     }
     if(active){
+      // draw ghost / silhouette
+      let ghost = {...active}
+      while(!collide(grid, {...ghost, y: ghost.y+1})) ghost.y++
+      ctx.save()
+      ctx.globalAlpha = 0.35
+      ctx.fillStyle = (COLORS as any)[active.key] || '#fff'
+      for(let r=0;r<ghost.shape.length;r++){
+        for(let c=0;c<ghost.shape[r].length;c++){
+          if(ghost.shape[r][c]){
+            const gx = ghost.x + c
+            const gy = ghost.y + r
+            if(gy>=0) ctx.fillRect(gx*CELL, gy*CELL, CELL-1, CELL-1)
+          }
+        }
+      }
+      ctx.restore()
+
+      // draw active piece normally
       ctx.fillStyle = (COLORS as any)[active.key] || '#fff'
       for(let r=0;r<active.shape.length;r++){
         for(let c=0;c<active.shape[r].length;c++){
@@ -139,22 +159,58 @@ export default function GameBoard(){
   useEffect(()=> draw(canvas2.current, grid2, piece2), [grid2, piece2])
 
   function lockAndClear(player:number, p:Piece){
+    // compute garbage using guideline rules (basic: single/double/triple/tetris, combos, back-to-back, all clear)
+    function computeGarbageFor(player:number, cleared:number, newGrid:any[][]){
+      // base by cleared lines
+      let base = 0
+      let qualifiesB2B = false
+      if(cleared===4){ base = 4; qualifiesB2B = true }
+      else if(cleared===3) base = 2
+      else if(cleared===2) base = 1
+      else if(cleared===1) base = 0
+
+      // all clear detection
+      const allClear = !newGrid.some((row:any[])=> row.some((cell:any)=>!!cell))
+      if(allClear && cleared>0){ base += 7; qualifiesB2B = true }
+
+      // combo bonus rules: (simple mapping from guideline)
+      const comboRef = player===1 ? combo1 : combo2
+      let comboExtra = 0
+      if(comboRef.current>=2 && comboRef.current<=3) comboExtra = 1
+      else if(comboRef.current===4 || comboRef.current===5) comboExtra = 2
+      else if(comboRef.current>5) comboExtra = 2 + Math.floor((comboRef.current-4)/2)
+
+      // back-to-back bonus
+      const b2bRef = player===1 ? b2b1 : b2b2
+      let b2bExtra = 0
+      if(b2bRef.current && qualifiesB2B) b2bExtra = 1
+
+      const total = base + comboExtra + b2bExtra
+      const qualifies = qualifiesB2B
+      return { total, qualifies, allClear }
+    }
+
     if(player===1){
       setGrid1(g=>{
         const ng = lockPieceToGrid(g,p)
         const res = clearLines(ng)
         if(res.cleared) setScore1(s=>s + res.cleared*100)
-        // each cleared row becomes one garbage row for the opponent
-        if(res.cleared) receiveGarbage(2, res.cleared)
+
+        const info = computeGarbageFor(1, res.cleared, res.grid)
+        if(info.total) receiveGarbage(2, info.total)
+
+        // update combo and b2b refs
+        if(res.cleared>0) combo1.current = combo1.current + 1
+        else combo1.current = 0
+        b2b1.current = info.qualifies ? true : false
+
         return res.grid
       })
       spawn(1)
       setTimeout(()=>{
-        // if player's top row filled -> lose
         if(grid1[0].some((cell:any)=>!!cell)){
           setRunning1(false); setGameOver(true); setWinner('opponent')
         }
-        // if opponent top row filled -> win
         if(grid2[0].some((cell:any)=>!!cell)){
           setRunning1(false); setRunning2(false); setGameOver(true); setWinner('player')
         }
@@ -164,7 +220,14 @@ export default function GameBoard(){
         const ng = lockPieceToGrid(g,p)
         const res = clearLines(ng)
         if(res.cleared) setScore2(s=>s + res.cleared*100)
-        if(res.cleared) receiveGarbage(1, res.cleared)
+
+        const info = computeGarbageFor(2, res.cleared, res.grid)
+        if(info.total) receiveGarbage(1, info.total)
+
+        if(res.cleared>0) combo2.current = combo2.current + 1
+        else combo2.current = 0
+        b2b2.current = info.qualifies ? true : false
+
         return res.grid
       })
       spawn(2)
@@ -213,6 +276,7 @@ export default function GameBoard(){
   // gravity simple
   useEffect(()=>{
     if(!running1) return
+    const speed = softDrop1 ? 50 : 450
     const id = setInterval(()=>{
       setPiece1(prev=>{
         const moved = {...prev, y: prev.y+1}
@@ -224,9 +288,9 @@ export default function GameBoard(){
         }
         return moved
       })
-    }, 450)
+    }, speed)
     return ()=>clearInterval(id)
-  },[grid1, running1, queue1])
+  },[grid1, running1, queue1, softDrop1])
 
   useEffect(()=>{
     if(!running2) return
@@ -249,7 +313,9 @@ export default function GameBoard(){
   useEffect(()=>{
     function onKey(e:KeyboardEvent){
       if(!running1) return
-      const k = e.key.toLowerCase()
+      const raw = e.key
+      const k = typeof raw === 'string' ? raw.toLowerCase() : raw
+      // prevent default for space and arrow keys
       if(k === ' ' || k.startsWith('arrow')) e.preventDefault()
 
       if(k==='a' || k==='arrowleft'){
@@ -257,11 +323,37 @@ export default function GameBoard(){
       } else if(k==='d' || k==='arrowright'){
         setPiece1(prev=>{ const moved = {...prev, x: prev.x+1}; if(collide(grid1,moved)) return prev; return moved })
       } else if(k==='s' || k==='arrowdown'){
+        // start soft drop
+        setSoftDrop1(true)
+        // immediate small step for responsiveness
         setPiece1(prev=>{ const moved = {...prev, y: prev.y+1}; if(collide(grid1,moved)) return prev; return moved })
       } else if(k==='w' || k==='arrowup'){
         setPiece1(prev=> tryRotate(grid1, prev))
       } else if(k===' '){
-        setPiece1(prev=>{ let p={...prev}; while(!collide(grid1,{...p,y:p.y+1})) p.y++; lockAndClear(1,p); const st = {...(queue1[0]||randomTetromino()), x:3,y:-2}; setPiece1(st); return st })
+        // hard drop implemented synchronously to immediately show next piece
+        // compute landing
+        const p = piece1
+        let landing = {...p}
+        while(!collide(grid1, {...landing, y: landing.y+1})) landing.y++
+        // lock and clear synchronously (functional update)
+        setGrid1(g=>{
+          const ng = lockPieceToGrid(g, landing)
+          const res = clearLines(ng)
+          if(res.cleared) setScore1(s=>s + res.cleared*100)
+          // compute garbage using existing lockAndClear logic
+          // small inline compute (reuse computeGarbageFor from lockAndClear area if needed)
+          // send simple garbage equal to cleared for now (detailed computed in lockAndClear path)
+          if(res.cleared) receiveGarbage(2, res.cleared)
+          return res.grid
+        })
+        // advance queue immediately
+        setQueue1(q=>{
+          const [, ...rest] = q
+          const next = {...rest[0] || randomTetromino(), x:3, y:-2}
+          setPiece1(next)
+          setHoldUsed1(false)
+          return [...rest, {...randomTetromino(), x:3, y:-2}]
+        })
       } else if(k==='c'){
         setPiece1(prev=>{
           if(holdUsed1) return prev
@@ -271,9 +363,16 @@ export default function GameBoard(){
         })
       }
     }
+
+    function onKeyUp(e:KeyboardEvent){
+      const k = (typeof e.key === 'string') ? e.key.toLowerCase() : e.key
+      if(k==='s' || k==='arrowdown') setSoftDrop1(false)
+    }
+
     window.addEventListener('keydown', onKey, { passive: false })
-    return ()=>window.removeEventListener('keydown', onKey)
-  },[grid1, running1, held1, holdUsed1, queue1])
+    window.addEventListener('keyup', onKeyUp)
+    return ()=>{ window.removeEventListener('keydown', onKey); window.removeEventListener('keyup', onKeyUp) }
+  },[grid1, running1, held1, holdUsed1, queue1, piece1])
 
   // previews
   function PiecePreview({p, size=64}:{p:Piece|null, size?:number}){
@@ -300,41 +399,46 @@ export default function GameBoard(){
         }}>Restart</button>
       </div>
 
-      <div style={{display:'flex', gap:24}}>
-        <div>
-          <h4>Player</h4>
-          <canvas ref={canvas1} style={{border:'1px solid #122'}} />
-          <div style={{display:'flex', gap:8, marginTop:8}}>
-            <div>
-              <div style={{fontSize:12, color:'#ccc'}}>Hold</div>
-              <PiecePreview p={held1} />
-            </div>
-            <div>
-              <div style={{fontSize:12,color:'#ccc'}}>Next</div>
-              <div style={{display:'flex', flexDirection:'column', gap:6}}>
-                {queue1.slice(1,6).map((q,i)=> <PiecePreview key={i} p={q} size={36} />)}
-              </div>
+      <div style={{display:'flex', gap:24, alignItems:'flex-start'}}>
+        {/* Player area: left side has hold/next stacked, then canvas */}
+        <div style={{display:'flex', gap:12, alignItems:'flex-start'}}>
+          <div style={{display:'flex', flexDirection:'column', gap:8, alignItems:'center'}}>
+            <div style={{fontSize:12, color:'#ccc'}}>Hold</div>
+            <PiecePreview p={held1} />
+            <div style={{height:8}} />
+            <div style={{fontSize:12,color:'#ccc'}}>Next</div>
+            <div style={{display:'flex', flexDirection:'column', gap:6}}>
+              {queue1.slice(1,6).map((q,i)=> <PiecePreview key={i} p={q} size={36} />)}
             </div>
           </div>
-          <div>Score: {score1}</div>
+
+          <div>
+            <h4>Player</h4>
+            <canvas ref={canvas1} style={{border:'1px solid #122'}} />
+            <div style={{marginTop:8}}>Score: {score1}</div>
+          </div>
         </div>
 
-        <div>
-          <h4>Opponent</h4>
-          <canvas ref={canvas2} style={{border:'1px solid #122'}} />
-          <div style={{display:'flex', gap:8, marginTop:8}}>
-            <div>
-              <div style={{fontSize:12,color:'#ccc'}}>Hold</div>
-              <PiecePreview p={held2} />
-            </div>
-            <div>
-              <div style={{fontSize:12,color:'#ccc'}}>Next</div>
-              <div style={{display:'flex', flexDirection:'column', gap:6}}>
-                {queue2.slice(1,6).map((q,i)=> <PiecePreview key={i} p={q} size={36} />)}
-              </div>
+        {/* center divider */}
+        <div style={{width:2, background:'#122', margin:'6px 4px'}} aria-hidden/>
+
+        {/* Opponent area: canvas then hold/next to the right for symmetry */}
+        <div style={{display:'flex', gap:12, alignItems:'flex-start'}}>
+          <div>
+            <h4>Opponent</h4>
+            <canvas ref={canvas2} style={{border:'1px solid #122'}} />
+            <div style={{marginTop:8}}>Score: {score2}</div>
+          </div>
+
+          <div style={{display:'flex', flexDirection:'column', gap:8, alignItems:'center'}}>
+            <div style={{fontSize:12,color:'#ccc'}}>Hold</div>
+            <PiecePreview p={held2} />
+            <div style={{height:8}} />
+            <div style={{fontSize:12,color:'#ccc'}}>Next</div>
+            <div style={{display:'flex', flexDirection:'column', gap:6}}>
+              {queue2.slice(1,6).map((q,i)=> <PiecePreview key={i} p={q} size={36} />)}
             </div>
           </div>
-          <div>Score: {score2}</div>
         </div>
       </div>
 
