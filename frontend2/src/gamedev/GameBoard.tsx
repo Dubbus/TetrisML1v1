@@ -290,8 +290,36 @@ export default function GameBoard(){
 
   function receiveGarbage(player:number, lines:number, holeCol?:number){
     const make = (hole:number)=> Array.from({length:COLS}, (_,i)=> i===hole?0:'G:#888888')
-    if(player===1) setGrid1(g=>{ const ng = g.map(r=>r.slice()); const hole = typeof holeCol==='number' ? holeCol : Math.floor(Math.random()*COLS); for(let i=0;i<lines;i++){ ng.shift(); ng.push(make(hole)) } return ng })
-    else setGrid2(g=>{ const ng = g.map(r=>r.slice()); const hole = typeof holeCol==='number' ? holeCol : Math.floor(Math.random()*COLS); for(let i=0;i<lines;i++){ ng.shift(); ng.push(make(hole)) } return ng })
+    if(player===1) setGrid1(g=>{
+      const ng = g.map(r=>r.slice())
+      const hole = (typeof holeCol==='number' && holeCol>=0 && holeCol<COLS) ? holeCol : Math.floor(Math.random()*COLS)
+      for(let i=0;i<lines;i++){ ng.shift(); ng.push(make(hole)) }
+      // defensive: ensure each pushed garbage row has at least one hole
+      for(let r=ng.length-lines;r<ng.length;r++){
+        const row = ng[r]
+        if(!row.some((cell:any)=>!cell)){
+          // no hole found — force one
+          const fixIdx = Math.max(0, Math.min(COLS-1, hole))
+          row[fixIdx] = 0
+          console.warn('[receiveGarbage] forced hole at', fixIdx, 'for player 1')
+        }
+      }
+      return ng
+    })
+    else setGrid2(g=>{
+      const ng = g.map(r=>r.slice())
+      const hole = (typeof holeCol==='number' && holeCol>=0 && holeCol<COLS) ? holeCol : Math.floor(Math.random()*COLS)
+      for(let i=0;i<lines;i++){ ng.shift(); ng.push(make(hole)) }
+      for(let r=ng.length-lines;r<ng.length;r++){
+        const row = ng[r]
+        if(!row.some((cell:any)=>!cell)){
+          const fixIdx = Math.max(0, Math.min(COLS-1, hole))
+          row[fixIdx] = 0
+          console.warn('[receiveGarbage] forced hole at', fixIdx, 'for player 2')
+        }
+      }
+      return ng
+    })
     // check top rows after applying garbage
     setTimeout(()=>{
       if(player===1){ if(grid1[0].some((cell:any)=>!!cell)){ setRunning1(false); setGameOver(true); setWinner('opponent') } }
