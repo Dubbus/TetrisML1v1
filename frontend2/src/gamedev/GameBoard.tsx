@@ -240,7 +240,7 @@ export default function GameBoard(){
         if(res.cleared) setScore1(s=>s + res.cleared*100)
 
   const info = computeGarbageFor(1, res.cleared, res.grid, p)
-  if(info.total) receiveGarbage(2, info.total, info.holeCol ?? undefined)
+  if(info.total) setTimeout(()=> receiveGarbage(2, info.total, info.holeCol ?? undefined), 500)
 
         // update combo and b2b refs
         if(res.cleared>0) combo1.current = combo1.current + 1
@@ -265,7 +265,7 @@ export default function GameBoard(){
         if(res.cleared) setScore2(s=>s + res.cleared*100)
 
   const info = computeGarbageFor(2, res.cleared, res.grid, p)
-  if(info.total) receiveGarbage(1, info.total, info.holeCol ?? undefined)
+  if(info.total) setTimeout(()=> receiveGarbage(1, info.total, info.holeCol ?? undefined), 500)
 
         if(res.cleared>0) combo2.current = combo2.current + 1
         else combo2.current = 0
@@ -510,7 +510,7 @@ export default function GameBoard(){
         const ng = lockPieceToGrid(grid1, landing)
         const res = clearLines(ng)
         if(res.cleared) setScore1(s=>s + res.cleared*100)
-        if(res.cleared) receiveGarbage(2, res.cleared)
+  if(res.cleared) setTimeout(()=> receiveGarbage(2, res.cleared), 500)
 
         // if the top row now has blocks, end the game immediately instead of spawning
         const topFilled = res.grid[0].some((cell:any)=> !!cell)
