@@ -235,7 +235,7 @@ export default function GameBoard(){
       spawn(1)
       setTimeout(()=>{
         if(grid1[0].some((cell:any)=>!!cell)){
-          setRunning1(false); setGameOver(true); setWinner('opponent')
+          setRunning1(false); setRunning2(false); setGameOver(true); setWinner('opponent')
         }
         if(grid2[0].some((cell:any)=>!!cell)){
           setRunning1(false); setRunning2(false); setGameOver(true); setWinner('player')
@@ -259,7 +259,7 @@ export default function GameBoard(){
       spawn(2)
       setTimeout(()=>{
         if(grid2[0].some((cell:any)=>!!cell)){
-          setRunning2(false); setGameOver(true); setWinner('player')
+          setRunning1(false); setRunning2(false); setGameOver(true); setWinner('player')
         }
         if(grid1[0].some((cell:any)=>!!cell)){
           setRunning1(false); setRunning2(false); setGameOver(true); setWinner('opponent')
@@ -322,7 +322,7 @@ export default function GameBoard(){
     })
     // check top rows after applying garbage
     setTimeout(()=>{
-      if(player===1){ if(grid1[0].some((cell:any)=>!!cell)){ setRunning1(false); setGameOver(true); setWinner('opponent') } }
+      if(player===1){ if(grid1[0].some((cell:any)=>!!cell)){ setRunning1(false); setRunning2(false); setGameOver(true); setWinner('opponent') } }
       else { if(grid2[0].some((cell:any)=>!!cell)){ setRunning1(false); setRunning2(false); setGameOver(true); setWinner('player') } }
     }, 0)
   }
@@ -436,6 +436,7 @@ export default function GameBoard(){
         setGrid1(res.grid)
         if(topFilled){
           setRunning1(false)
+          setRunning2(false)
           setGameOver(true)
           setWinner('opponent')
         } else {
