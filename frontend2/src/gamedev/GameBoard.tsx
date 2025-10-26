@@ -380,20 +380,29 @@ export default function GameBoard(){
         const p = piece1Ref.current
         let landing = {...p}
         while(!collide(grid1, {...landing, y: landing.y+1})) landing.y++
-        setGrid1(g=>{
-          const ng = lockPieceToGrid(g, landing)
-          const res = clearLines(ng)
-          if(res.cleared) setScore1(s=>s + res.cleared*100)
-          if(res.cleared) receiveGarbage(2, res.cleared)
-          return res.grid
-        })
-        setQueue1(q=>{
-          const [, ...rest] = q
-          const next = {...rest[0] || randomTetromino(), x:3, y:-2}
-          setPiece1AndRef(next)
-          setHoldUsed1(false)
-          return [...rest, {...randomTetromino(), x:3, y:-2}]
-        })
+
+        // compute new grid synchronously so we can detect immediate game over
+        const ng = lockPieceToGrid(grid1, landing)
+        const res = clearLines(ng)
+        if(res.cleared) setScore1(s=>s + res.cleared*100)
+        if(res.cleared) receiveGarbage(2, res.cleared)
+
+        // if the top row now has blocks, end the game immediately instead of spawning
+        const topFilled = res.grid[0].some((cell:any)=> !!cell)
+        setGrid1(res.grid)
+        if(topFilled){
+          setRunning1(false)
+          setGameOver(true)
+          setWinner('opponent')
+        } else {
+          setQueue1(q=>{
+            const [, ...rest] = q
+            const next = {...rest[0] || randomTetromino(), x:3, y:-2}
+            setPiece1AndRef(next)
+            setHoldUsed1(false)
+            return [...rest, {...randomTetromino(), x:3, y:-2}]
+          })
+        }
       }
       // hold
       else if(k==='c'){
