@@ -93,6 +93,18 @@ export default function GameBoard(){
   useEffect(()=>{ piece2Ref.current = piece2 }, [piece2])
   function setPiece2AndRef(p:Piece){ piece2Ref.current = p; setPiece2(p) }
 
+  // toggle to enable/disable simple AI (you can replace AI logic with your ML model)
+  const [aiEnabled, setAiEnabled] = useState(true)
+
+  // ML integration point (placeholder): your model can implement this function and return
+  // an action for the opponent. It's intentionally synchronous here; you can replace it
+  // with an async call to your model server or in-memory inference.
+  // Example return: { type: 'place', x: 3, rot: 1 } meaning aim for x=3 with rot state 1.
+  function chooseActionFromModel(observation:any){
+    // TODO: replace with ML model inference. For now return null to fall back to built-in AI.
+    return null
+  }
+
   const [held1,setHeld1] = useState<Piece|null>(null)
   const [held2,setHeld2] = useState<Piece|null>(null)
   const [holdUsed1,setHoldUsed1] = useState(false)
@@ -369,50 +381,69 @@ export default function GameBoard(){
     return ()=>clearInterval(id)
   },[grid2, running2, queue2])
 
-  // Simple opponent AI: nudges piece toward lowest column, rotates occasionally, sometimes hard-drops
+  // Smarter opponent AI: search rotations & x positions, evaluate placements with a heuristic,
+  // then execute moves toward the best placement. Replace this block with an ML model by
+  // calling `chooseActionFromModel(observation)` (see placeholder below).
   useEffect(()=>{
-    if(!running2 || gameOver) return
+    if(!running2 || gameOver || !aiEnabled) return
+
+    function scorePlacement(g:any[][], placed:Piece){
+      const ng = lockPieceToGrid(g, placed)
+      const res = clearLines(ng)
+      const heights = Array(COLS).fill(0)
+      for(let c=0;c<COLS;c++){
+        for(let r=0;r<ROWS;r++){
+          if(res.grid[r][c]){ heights[c] = ROWS - r; break }
+        }
+      }
+      const aggregate = heights.reduce((a,b)=>a+b,0)
+      let holes = 0
+      for(let c=0;c<COLS;c++){
+        let filledSeen = false
+        for(let r=0;r<ROWS;r++){
+          if(res.grid[r][c]) filledSeen = true
+          else if(filledSeen) holes++
+        }
+      }
+      return (res.cleared * 1000) - aggregate - (holes * 50)
+    }
+
     const aiId = setInterval(()=>{
       const cur = piece2Ref.current
       if(!cur) return
 
-      // compute column heights and pick the column with the lowest stack
-      const heights = Array(COLS).fill(ROWS)
-      for(let c=0;c<COLS;c++){
-        for(let r=0;r<ROWS;r++){
-          if(grid2[r][c]){ heights[c] = r; break }
+      let bestScore = -Infinity
+      let bestPlacement: {x:number, rot:number, placed?:Piece} | null = null
+      let shape = cur.shape
+      for(let rot=0; rot<4; rot++){
+        for(let x=-2; x<=COLS; x++){
+          const testPiece: Piece = { key: cur.key, shape, x, y: cur.y }
+          if(collide(grid2, testPiece)) continue
+          let landing = {...testPiece}
+          while(!collide(grid2, {...landing, y: landing.y+1})) landing.y++
+          const sc = scorePlacement(grid2, landing)
+          if(sc > bestScore){ bestScore = sc; bestPlacement = { x, rot, placed: landing } }
         }
-      }
-      let targetCol = 0
-      let best = -1
-      for(let c=0;c<COLS;c++){ if(heights[c] > best){ best = heights[c]; targetCol = c } }
-
-      // aim for center of piece roughly aligned to targetCol
-      const pieceCenter = Math.floor(cur.x + (cur.shape[0]?.length || 1)/2)
-
-      // if we are left of target, try move right; if right, try move left
-      if(pieceCenter < targetCol){
-        const moved = {...cur, x: cur.x+1}
-        if(!collide(grid2, moved)) { setPiece2AndRef(moved); return }
-      } else if(pieceCenter > targetCol){
-        const moved = {...cur, x: cur.x-1}
-        if(!collide(grid2, moved)) { setPiece2AndRef(moved); return }
+        shape = rotate(shape)
       }
 
-      // sometimes rotate
-      if(Math.random() < 0.18){ setPiece2AndRef(tryRotate(grid2, cur)); return }
+      if(!bestPlacement || !bestPlacement.placed) return
+      const targetX = bestPlacement.placed.x
 
-      // rarely hard-drop when aligned or randomly
-      if(Math.random() < 0.08 || Math.abs(pieceCenter - targetCol) <= 0){
-        let landing = {...cur}
-        while(!collide(grid2, {...landing, y: landing.y+1})) landing.y++
-        // use lockAndClear to handle clears/garbage/spawn
-        lockAndClear(2, landing)
-        return
-      }
-    }, 260)
+      const curX = cur.x
+      if(curX < targetX){ const moved = {...cur, x: cur.x+1}; if(!collide(grid2,moved)) { setPiece2AndRef(moved); return } }
+      if(curX > targetX){ const moved = {...cur, x: cur.x-1}; if(!collide(grid2,moved)) { setPiece2AndRef(moved); return } }
+
+      const rotated = tryRotate(grid2, cur)
+      if(JSON.stringify(rotated.shape) !== JSON.stringify(cur.shape)) { setPiece2AndRef(rotated); return }
+
+      let landing = {...cur}
+      while(!collide(grid2, {...landing, y: landing.y+1})) landing.y++
+      lockAndClear(2, landing)
+    }, 200)
+
     return ()=> clearInterval(aiId)
-  },[grid2, running2, queue2, gameOver])
+  },[grid2, running2, queue2, gameOver, aiEnabled])
 
   // controls (WASD and Arrow keys both supported). Use pressedKeys to avoid OS auto-repeat
   // and perform immediate horizontal moves via piece1Ref + setPiece1AndRef to avoid race with gravity.
@@ -550,7 +581,7 @@ export default function GameBoard(){
 
   return (
     <div>
-      <div style={{marginBottom:8}}>
+      <div style={{marginBottom:8, display:'flex', gap:8, alignItems:'center'}}>
         <button onClick={()=>{
           setGrid1(makeEmptyGrid()); setGrid2(makeEmptyGrid());
           setQueue1(createQueue()); setQueue2(createQueue());
@@ -558,6 +589,8 @@ export default function GameBoard(){
           setHeld1(null); setHeld2(null); setHoldUsed1(false); setHoldUsed2(false);
           setScore1(0); setScore2(0); setRunning1(true); setRunning2(true); setGameOver(false); setWinner(null)
         }}>Restart</button>
+        <button onClick={()=> setAiEnabled(e=>!e)} style={{padding:'6px 10px'}}>{aiEnabled ? 'AI: On' : 'AI: Off'}</button>
+        <div style={{fontSize:12,color:'#888'}} aria-hidden>AI toggle for testing (replace AI in code with your ML model)</div>
       </div>
 
       <div style={{display:'flex', gap:24, alignItems:'flex-start'}}>
