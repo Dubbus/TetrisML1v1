@@ -108,6 +108,10 @@ export default function GameBoard(){
   const [gameOver,setGameOver] = useState(false)
   const [winner,setWinner] = useState<'player'|'opponent'|'draw'|null>(null)
 
+  // garbage progress: singles make progress toward a garbage row
+  const garbageProgress1 = useRef(0)
+  const garbageProgress2 = useRef(0)
+
   // input helpers: horizontal repeat handling and pressed key guards
   const horizontalInterval = useRef<number|undefined>(undefined)
   const horizontalDir = useRef<'left'|'right'|null>(null)
@@ -170,8 +174,13 @@ export default function GameBoard(){
 
   function lockAndClear(player:number, p:Piece){
     // compute garbage using guideline rules (basic: single/double/triple/tetris, combos, back-to-back, all clear)
-    function computeGarbageFor(player:number, cleared:number, newGrid:any[][]){
-      // base by cleared lines
+    function computeGarbageFor(player:number, cleared:number, newGrid:any[][], lockedPiece:Piece){
+      // mapping rules per spec:
+      // cleared=1 -> no immediate garbage, but progress +1 toward a garbage row
+      // cleared=2 -> send 1 row
+      // cleared=3 -> send 2 rows (aligned holes)
+      // cleared=4 -> send 4 rows (aligned holes)
+      // returns total rows to send and chosen hole column (for aligned holes)
       let base = 0
       let qualifiesB2B = false
       if(cleared===4){ base = 4; qualifiesB2B = true }
@@ -179,25 +188,32 @@ export default function GameBoard(){
       else if(cleared===2) base = 1
       else if(cleared===1) base = 0
 
-      // all clear detection
       const allClear = !newGrid.some((row:any[])=> row.some((cell:any)=>!!cell))
       if(allClear && cleared>0){ base += 7; qualifiesB2B = true }
 
-      // combo bonus rules: (simple mapping from guideline)
-      const comboRef = player===1 ? combo1 : combo2
-      let comboExtra = 0
-      if(comboRef.current>=2 && comboRef.current<=3) comboExtra = 1
-      else if(comboRef.current===4 || comboRef.current===5) comboExtra = 2
-      else if(comboRef.current>5) comboExtra = 2 + Math.floor((comboRef.current-4)/2)
+      // choose hole column informed by the locked piece position (center of piece), fallback to random
+      let holeCol: number | null = null
+      try{
+        const px = Math.floor(lockedPiece.x + (lockedPiece.shape[0]?.length || 1)/2)
+        holeCol = Math.max(0, Math.min(COLS-1, px))
+      } catch(e){ holeCol = Math.floor(Math.random()*COLS) }
 
-      // back-to-back bonus
-      const b2bRef = player===1 ? b2b1 : b2b2
-      let b2bExtra = 0
-      if(b2bRef.current && qualifiesB2B) b2bExtra = 1
+      // apply single-line progress accumulation: two singles => 1 garbage row
+      let totalToSend = base
+      if(cleared===1){
+        if(player===1) garbageProgress1.current += 1
+        else garbageProgress2.current += 1
+      }
 
-      const total = base + comboExtra + b2bExtra
-      const qualifies = qualifiesB2B
-      return { total, qualifies, allClear }
+      // convert progress into full rows (threshold 2 singles => 1 row)
+      const progRef = player===1 ? garbageProgress1 : garbageProgress2
+      if(progRef.current >= 2){
+        const extra = Math.floor(progRef.current / 2)
+        totalToSend += extra
+        progRef.current = progRef.current % 2
+      }
+
+      return { total: totalToSend, qualifies: qualifiesB2B, allClear, holeCol }
     }
 
     if(player===1){
@@ -206,8 +222,8 @@ export default function GameBoard(){
         const res = clearLines(ng)
         if(res.cleared) setScore1(s=>s + res.cleared*100)
 
-        const info = computeGarbageFor(1, res.cleared, res.grid)
-        if(info.total) receiveGarbage(2, info.total)
+  const info = computeGarbageFor(1, res.cleared, res.grid, p)
+  if(info.total) receiveGarbage(2, info.total, info.holeCol ?? undefined)
 
         // update combo and b2b refs
         if(res.cleared>0) combo1.current = combo1.current + 1
@@ -231,8 +247,8 @@ export default function GameBoard(){
         const res = clearLines(ng)
         if(res.cleared) setScore2(s=>s + res.cleared*100)
 
-        const info = computeGarbageFor(2, res.cleared, res.grid)
-        if(info.total) receiveGarbage(1, info.total)
+  const info = computeGarbageFor(2, res.cleared, res.grid, p)
+  if(info.total) receiveGarbage(1, info.total, info.holeCol ?? undefined)
 
         if(res.cleared>0) combo2.current = combo2.current + 1
         else combo2.current = 0
@@ -272,10 +288,10 @@ export default function GameBoard(){
     }
   }
 
-  function receiveGarbage(player:number, lines:number){
-    const make = ()=>{ const hole = Math.floor(Math.random()*COLS); return Array.from({length:COLS}, (_,i)=> i===hole?0:'G:#888888') }
-    if(player===1) setGrid1(g=>{ const ng = g.map(r=>r.slice()); for(let i=0;i<lines;i++){ ng.shift(); ng.push(make()) } return ng })
-    else setGrid2(g=>{ const ng = g.map(r=>r.slice()); for(let i=0;i<lines;i++){ ng.shift(); ng.push(make()) } return ng })
+  function receiveGarbage(player:number, lines:number, holeCol?:number){
+    const make = (hole:number)=> Array.from({length:COLS}, (_,i)=> i===hole?0:'G:#888888')
+    if(player===1) setGrid1(g=>{ const ng = g.map(r=>r.slice()); const hole = typeof holeCol==='number' ? holeCol : Math.floor(Math.random()*COLS); for(let i=0;i<lines;i++){ ng.shift(); ng.push(make(hole)) } return ng })
+    else setGrid2(g=>{ const ng = g.map(r=>r.slice()); const hole = typeof holeCol==='number' ? holeCol : Math.floor(Math.random()*COLS); for(let i=0;i<lines;i++){ ng.shift(); ng.push(make(hole)) } return ng })
     // check top rows after applying garbage
     setTimeout(()=>{
       if(player===1){ if(grid1[0].some((cell:any)=>!!cell)){ setRunning1(false); setGameOver(true); setWinner('opponent') } }
