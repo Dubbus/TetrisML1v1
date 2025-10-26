@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { SHAPES, COLORS } from './TetrominoConstants'
-import { rotate, randomTetromino } from './TetrominoLogic'
+import { rotate } from './TetrominoLogic'
 
 const COLS = 10
 const ROWS = 20
@@ -63,12 +63,33 @@ function tryRotate(grid:any[][], piece:Piece){
   return piece
 }
 
-function createQueue(n=6){
+function createQueue(n=6, avoidKey?: string){
+  // produce a queue sampled from the 7-bag randomizer with boundary-avoidance
+  // so that no two consecutive pieces are identical across bag boundaries.
+  const keys = Object.keys(SHAPES)
   const q:Piece[] = []
-  for(let i=0;i<n;i++){ const p = randomTetromino(); q.push({...p, x:3, y:-2}) }
+  while(q.length < n){
+    const bag = keys.slice()
+    // Fisher-Yates shuffle
+    for(let i=bag.length-1;i>0;i--){ const j = Math.floor(Math.random()*(i+1)); const t = bag[i]; bag[i]=bag[j]; bag[j]=t }
+
+    // if we have an avoidKey (e.g. previous last piece), ensure the first element
+    // of the new bag is not equal to it by rotating the bag until different.
+    if(typeof avoidKey === 'string' && q.length === 0){
+      // we're filling from empty but the caller wants to avoid starting with avoidKey
+      while(bag[0] === avoidKey){ bag.push(bag.shift()!) }
+    } else if(q.length > 0){
+      // avoid bag boundary duplication: if last of q equals first of bag, rotate bag
+      while(q[q.length-1].key === bag[0]){ bag.push(bag.shift()!) }
+    }
+
+    for(const k of bag){ if(q.length>=n) break; q.push({ key: k, shape: (SHAPES as any)[k], x:3, y:-2 }) }
+  }
   return q
 }
-function createStart(){ const p = randomTetromino(); return {...p, x:3, y:-2} }
+
+// initial piece comes from a queue so there's no duplicate between piece and queue[0]
+function createStartFromQueue(q:Piece[]){ return q[0] }
 
 export default function GameBoard(){
   const canvas1 = useRef<HTMLCanvasElement|null>(null)
@@ -77,11 +98,27 @@ export default function GameBoard(){
   const [grid1,setGrid1] = useState<any[][]>(makeEmptyGrid())
   const [grid2,setGrid2] = useState<any[][]>(makeEmptyGrid())
 
-  const [queue1,setQueue1] = useState<Piece[]>(()=>createQueue())
-  const [queue2,setQueue2] = useState<Piece[]>(()=>createQueue())
+  // create initial queues once so piece and queue agree and no consecutive duplicates
+  const initialQ1 = createQueue()
+  const initialQ2 = createQueue()
+  const [queue1,setQueue1] = useState<Piece[]>(initialQ1)
+  const [queue2,setQueue2] = useState<Piece[]>(initialQ2)
 
-  const [piece1,setPiece1] = useState<Piece>(createStart())
-  const [piece2,setPiece2] = useState<Piece>(createStart())
+  const [piece1,setPiece1] = useState<Piece>(initialQ1[0])
+  const [piece2,setPiece2] = useState<Piece>(initialQ2[0])
+
+  // per-player 7-bag refs. We'll draw from these when we need new random pieces.
+  function shuffle<T>(arr:T[]){
+    for(let i=arr.length-1;i>0;i--){ const j = Math.floor(Math.random()*(i+1)); const t = arr[i]; arr[i]=arr[j]; arr[j]=t }
+    return arr
+  }
+
+  // unified draw helper that uses createQueue(1, avoidKey) so boundary avoidance
+  // rules are applied consistently across all code paths.
+  function drawFromBag(player:number, avoidKey?:string){
+    const p = createQueue(1, avoidKey)[0]
+    return { ...p }
+  }
 
   // refs to keep latest piece for immediate, race-free input updates
   const piece1Ref = useRef<Piece>(piece1)
@@ -289,18 +326,24 @@ export default function GameBoard(){
     if(player===1){
       setQueue1(q=>{
         const [, ...rest] = q
-        const next = {...randomTetromino(), x:3, y:-2}
-        setPiece1({...rest[0] || next})
+        const lastKey = q[q.length-1]?.key
+        const candidate = rest[0] ? {...rest[0], x:3, y:-2} : drawFromBag(1, lastKey)
+        setPiece1({...candidate})
         setHoldUsed1(false)
-        return [...rest, next]
+        const appendAvoid = (rest.length>0 ? rest[rest.length-1].key : candidate.key)
+        const append = drawFromBag(1, appendAvoid)
+        return [...rest.map(p=>({...p, x:3, y:-2})), append]
       })
     } else {
       setQueue2(q=>{
         const [, ...rest] = q
-        const next = {...randomTetromino(), x:3, y:-2}
-        setPiece2({...rest[0] || next})
+        const lastKey = q[q.length-1]?.key
+        const candidate = rest[0] ? {...rest[0], x:3, y:-2} : drawFromBag(2, lastKey)
+        setPiece2({...candidate})
         setHoldUsed2(false)
-        return [...rest, next]
+        const appendAvoid = (rest.length>0 ? rest[rest.length-1].key : candidate.key)
+        const append = drawFromBag(2, appendAvoid)
+        return [...rest.map(p=>({...p, x:3, y:-2})), append]
       })
     }
   }
@@ -354,7 +397,7 @@ export default function GameBoard(){
       if(collide(grid1, moved)){
         // lock the previous piece and spawn next (use ref current to avoid races)
         lockAndClear(1, prev)
-        const st = {...(queue1[0] || randomTetromino()), x:3, y:-2}
+  const st = {...(queue1[0] || drawFromBag(1, queue1[queue1.length-1]?.key)), x:3, y:-2}
         if(collide(grid1, st)) setRunning1(false)
         setPiece1AndRef(st)
       } else {
@@ -371,7 +414,7 @@ export default function GameBoard(){
         const moved = {...prev, y: prev.y+1}
         if(collide(grid2, moved)){
           lockAndClear(2, prev)
-          const st = {...(queue2[0] || randomTetromino()), x:3, y:-2}
+          const st = {...(queue2[0] || drawFromBag(2, queue2[queue2.length-1]?.key)), x:3, y:-2}
           if(collide(grid2, st)) setRunning2(false)
           return st
         }
@@ -523,10 +566,13 @@ export default function GameBoard(){
         } else {
           setQueue1(q=>{
             const [, ...rest] = q
-            const next = {...rest[0] || randomTetromino(), x:3, y:-2}
-            setPiece1AndRef(next)
+            const lastKey = q[q.length-1]?.key
+            const candidate = rest[0] ? {...rest[0], x:3, y:-2} : createQueue(1, lastKey)[0]
+            setPiece1AndRef({...candidate})
             setHoldUsed1(false)
-            return [...rest, {...randomTetromino(), x:3, y:-2}]
+            const appendAvoid = (rest.length>0 ? rest[rest.length-1].key : candidate.key)
+            const append = {...createQueue(1, appendAvoid)[0], x:3, y:-2}
+            return [...rest, append]
           })
         }
       }
@@ -536,10 +582,16 @@ export default function GameBoard(){
         const cur = piece1Ref.current
         if(holdUsed1) return
         setHoldUsed1(true)
-        if(!held1){ setHeld1({...cur, x:0,y:0}); const st = {...(queue1[0]||randomTetromino()), x:3,y:-2}; setPiece1AndRef(st); return }
+        if(!held1){
+          setHeld1({...cur, x:0,y:0})
+          const fallback = queue1[0] || createQueue(1, queue1[queue1.length-1]?.key)[0]
+          const st = {...fallback, x:3, y:-2}
+          setPiece1AndRef(st)
+          return
+        }
         const h = held1
         setHeld1({...cur, x:0,y:0})
-        const st = {...h, x:3,y:-2}
+        const st = {...h, x:3,y:2}
         setPiece1AndRef(st)
       }
     }
@@ -584,8 +636,9 @@ export default function GameBoard(){
       <div style={{marginBottom:8, display:'flex', gap:8, alignItems:'center'}}>
         <button onClick={()=>{
           setGrid1(makeEmptyGrid()); setGrid2(makeEmptyGrid());
-          setQueue1(createQueue()); setQueue2(createQueue());
-          setPiece1(createStart()); setPiece2(createStart());
+          const q1 = createQueue(); const q2 = createQueue()
+          setQueue1(q1); setQueue2(q2);
+          setPiece1(q1[0]); setPiece2(q2[0]);
           setHeld1(null); setHeld2(null); setHoldUsed1(false); setHoldUsed2(false);
           setScore1(0); setScore2(0); setRunning1(true); setRunning2(true); setGameOver(false); setWinner(null)
         }}>Restart</button>
@@ -642,8 +695,9 @@ export default function GameBoard(){
             <h2>{winner==='player'? 'You Win!' : winner==='opponent'? 'You Lose' : 'Draw'}</h2>
             <button onClick={()=>{
               setGrid1(makeEmptyGrid()); setGrid2(makeEmptyGrid());
-              setQueue1(createQueue()); setQueue2(createQueue());
-              setPiece1(createStart()); setPiece2(createStart());
+              const q1 = createQueue(); const q2 = createQueue()
+              setQueue1(q1); setQueue2(q2);
+              setPiece1(q1[0]); setPiece2(q2[0]);
               setHeld1(null); setHeld2(null); setHoldUsed1(false); setHoldUsed2(false);
               setScore1(0); setScore2(0); setRunning1(true); setRunning2(true); setGameOver(false); setWinner(null)
             }}>Restart</button>
