@@ -83,6 +83,11 @@ export default function GameBoard(){
   const [piece1,setPiece1] = useState<Piece>(createStart())
   const [piece2,setPiece2] = useState<Piece>(createStart())
 
+  // refs to keep latest piece for immediate, race-free input updates
+  const piece1Ref = useRef<Piece>(piece1)
+  useEffect(()=>{ piece1Ref.current = piece1 }, [piece1])
+  function setPiece1AndRef(p:Piece){ piece1Ref.current = p; setPiece1(p) }
+
   const [held1,setHeld1] = useState<Piece|null>(null)
   const [held2,setHeld2] = useState<Piece|null>(null)
   const [holdUsed1,setHoldUsed1] = useState(false)
@@ -102,6 +107,11 @@ export default function GameBoard(){
   const [running2,setRunning2] = useState(true)
   const [gameOver,setGameOver] = useState(false)
   const [winner,setWinner] = useState<'player'|'opponent'|'draw'|null>(null)
+
+  // input helpers: horizontal repeat handling and pressed key guards
+  const horizontalInterval = useRef<number|undefined>(undefined)
+  const horizontalDir = useRef<'left'|'right'|null>(null)
+  const pressedKeys = useRef<Record<string, boolean>>({})
 
   // draw
   function draw(canvas:HTMLCanvasElement|null, grid:any[][], active?:Piece){
@@ -263,7 +273,7 @@ export default function GameBoard(){
   }
 
   function receiveGarbage(player:number, lines:number){
-    const make = ()=>{ const hole = Math.floor(Math.random()*COLS); return Array.from({length:COLS}, (_,i)=> i===hole?0:'G:#000') }
+    const make = ()=>{ const hole = Math.floor(Math.random()*COLS); return Array.from({length:COLS}, (_,i)=> i===hole?0:'G:#888888') }
     if(player===1) setGrid1(g=>{ const ng = g.map(r=>r.slice()); for(let i=0;i<lines;i++){ ng.shift(); ng.push(make()) } return ng })
     else setGrid2(g=>{ const ng = g.map(r=>r.slice()); for(let i=0;i<lines;i++){ ng.shift(); ng.push(make()) } return ng })
     // check top rows after applying garbage
@@ -273,21 +283,22 @@ export default function GameBoard(){
     }, 0)
   }
 
-  // gravity simple
+  // gravity simple (use ref-based piece updates to avoid race with input)
   useEffect(()=>{
     if(!running1) return
     const speed = softDrop1 ? 50 : 450
     const id = setInterval(()=>{
-      setPiece1(prev=>{
-        const moved = {...prev, y: prev.y+1}
-        if(collide(grid1, moved)){
-          lockAndClear(1, prev)
-          const st = {...(queue1[0] || randomTetromino()), x:3, y:-2}
-          if(collide(grid1, st)) setRunning1(false)
-          return st
-        }
-        return moved
-      })
+      const prev = piece1Ref.current
+      const moved = {...prev, y: prev.y+1}
+      if(collide(grid1, moved)){
+        // lock the previous piece and spawn next (use ref current to avoid races)
+        lockAndClear(1, prev)
+        const st = {...(queue1[0] || randomTetromino()), x:3, y:-2}
+        if(collide(grid1, st)) setRunning1(false)
+        setPiece1AndRef(st)
+      } else {
+        setPiece1AndRef(moved)
+      }
     }, speed)
     return ()=>clearInterval(id)
   },[grid1, running1, queue1, softDrop1])
@@ -309,69 +320,116 @@ export default function GameBoard(){
     return ()=>clearInterval(id)
   },[grid2, running2, queue2])
 
-  // controls (WASD and Arrow keys both supported). Prevent default for space/arrow to stop page scroll.
+  // controls (WASD and Arrow keys both supported). Use pressedKeys to avoid OS auto-repeat
+  // and perform immediate horizontal moves via piece1Ref + setPiece1AndRef to avoid race with gravity.
   useEffect(()=>{
+    function startHorizontalRepeat(dir:'left'|'right'){
+      window.clearInterval(horizontalInterval.current)
+      horizontalInterval.current = window.setInterval(()=>{
+        const cur = piece1Ref.current
+        const moved = {...cur, x: cur.x + (dir==='left' ? -1 : 1)}
+        if(!collide(grid1, moved)) setPiece1AndRef(moved)
+      }, 120) as unknown as number
+    }
+
+    function stopHorizontalRepeat(){
+      if(horizontalInterval.current) { window.clearInterval(horizontalInterval.current); horizontalInterval.current = undefined }
+      horizontalDir.current = null
+    }
+
     function onKey(e:KeyboardEvent){
       if(!running1) return
       const raw = e.key
       const k = typeof raw === 'string' ? raw.toLowerCase() : raw
-      // prevent default for space and arrow keys
       if(k === ' ' || k.startsWith('arrow')) e.preventDefault()
 
+      // left
       if(k==='a' || k==='arrowleft'){
-        setPiece1(prev=>{ const moved = {...prev, x: prev.x-1}; if(collide(grid1,moved)) return prev; return moved })
-      } else if(k==='d' || k==='arrowright'){
-        setPiece1(prev=>{ const moved = {...prev, x: prev.x+1}; if(collide(grid1,moved)) return prev; return moved })
-      } else if(k==='s' || k==='arrowdown'){
-        // start soft drop — do NOT perform an immediate extra step here.
-        // Soft-drop is handled by the gravity interval at a constant faster speed.
+        if(pressedKeys.current['left']) return
+        pressedKeys.current['left'] = true
+        horizontalDir.current = 'left'
+        const cur = piece1Ref.current
+        const moved = {...cur, x: cur.x-1}
+        if(!collide(grid1, moved)) setPiece1AndRef(moved)
+        startHorizontalRepeat('left')
+      }
+      // right
+      else if(k==='d' || k==='arrowright'){
+        if(pressedKeys.current['right']) return
+        pressedKeys.current['right'] = true
+        horizontalDir.current = 'right'
+        const cur = piece1Ref.current
+        const moved = {...cur, x: cur.x+1}
+        if(!collide(grid1, moved)) setPiece1AndRef(moved)
+        startHorizontalRepeat('right')
+      }
+      // soft drop
+      else if(k==='s' || k==='arrowdown'){
+        if(pressedKeys.current['down']) return
+        pressedKeys.current['down'] = true
         setSoftDrop1(true)
-      } else if(k==='w' || k==='arrowup'){
-        setPiece1(prev=> tryRotate(grid1, prev))
-      } else if(k===' '){
-        // hard drop implemented synchronously to immediately show next piece
-        // compute landing
-        const p = piece1
+      }
+      // rotate
+      else if(k==='w' || k==='arrowup'){
+        if(pressedKeys.current['up']) return
+        pressedKeys.current['up'] = true
+        setPiece1AndRef(tryRotate(grid1, piece1Ref.current))
+      }
+      // hard drop
+      else if(k===' '){
+        const p = piece1Ref.current
         let landing = {...p}
         while(!collide(grid1, {...landing, y: landing.y+1})) landing.y++
-        // lock and clear synchronously (functional update)
         setGrid1(g=>{
           const ng = lockPieceToGrid(g, landing)
           const res = clearLines(ng)
           if(res.cleared) setScore1(s=>s + res.cleared*100)
-          // compute garbage using existing lockAndClear logic
-          // small inline compute (reuse computeGarbageFor from lockAndClear area if needed)
-          // send simple garbage equal to cleared for now (detailed computed in lockAndClear path)
           if(res.cleared) receiveGarbage(2, res.cleared)
           return res.grid
         })
-        // advance queue immediately
         setQueue1(q=>{
           const [, ...rest] = q
           const next = {...rest[0] || randomTetromino(), x:3, y:-2}
-          setPiece1(next)
+          setPiece1AndRef(next)
           setHoldUsed1(false)
           return [...rest, {...randomTetromino(), x:3, y:-2}]
         })
-      } else if(k==='c'){
-        setPiece1(prev=>{
-          if(holdUsed1) return prev
-          setHoldUsed1(true)
-          if(!held1){ setHeld1({...prev, x:0,y:0}); const st = {...(queue1[0]||randomTetromino()), x:3,y:-2}; setPiece1(st); return st }
-          const h = held1; setHeld1({...prev, x:0,y:0}); const st = {...h, x:3,y:-2}; setPiece1(st); return st
-        })
+      }
+      // hold
+      else if(k==='c'){
+        // use ref-based swap to avoid races with soft-drop/gravity
+        const cur = piece1Ref.current
+        if(holdUsed1) return
+        setHoldUsed1(true)
+        if(!held1){ setHeld1({...cur, x:0,y:0}); const st = {...(queue1[0]||randomTetromino()), x:3,y:-2}; setPiece1AndRef(st); return }
+        const h = held1
+        setHeld1({...cur, x:0,y:0})
+        const st = {...h, x:3,y:-2}
+        setPiece1AndRef(st)
       }
     }
 
     function onKeyUp(e:KeyboardEvent){
       const k = (typeof e.key === 'string') ? e.key.toLowerCase() : e.key
-      if(k==='s' || k==='arrowdown') setSoftDrop1(false)
+      if(k==='s' || k==='arrowdown'){
+        pressedKeys.current['down'] = false
+        setSoftDrop1(false)
+      }
+      if(k==='a' || k==='arrowleft'){
+        pressedKeys.current['left'] = false
+        stopHorizontalRepeat()
+      }
+      if(k==='d' || k==='arrowright'){
+        pressedKeys.current['right'] = false
+        stopHorizontalRepeat()
+      }
+      if(k==='w' || k==='arrowup') pressedKeys.current['up'] = false
     }
 
     window.addEventListener('keydown', onKey, { passive: false })
     window.addEventListener('keyup', onKeyUp)
-    return ()=>{ window.removeEventListener('keydown', onKey); window.removeEventListener('keyup', onKeyUp) }
-  },[grid1, running1, held1, holdUsed1, queue1, piece1])
+    return ()=>{ window.removeEventListener('keydown', onKey); window.removeEventListener('keyup', onKeyUp); stopHorizontalRepeat() }
+  },[grid1, running1, held1, holdUsed1, queue1])
 
   // previews
   function PiecePreview({p, size=64}:{p:Piece|null, size?:number}){
