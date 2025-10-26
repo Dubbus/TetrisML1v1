@@ -88,6 +88,11 @@ export default function GameBoard(){
   useEffect(()=>{ piece1Ref.current = piece1 }, [piece1])
   function setPiece1AndRef(p:Piece){ piece1Ref.current = p; setPiece1(p) }
 
+  // opponent piece ref + setter (used by simple AI to avoid races)
+  const piece2Ref = useRef<Piece>(piece2)
+  useEffect(()=>{ piece2Ref.current = piece2 }, [piece2])
+  function setPiece2AndRef(p:Piece){ piece2Ref.current = p; setPiece2(p) }
+
   const [held1,setHeld1] = useState<Piece|null>(null)
   const [held2,setHeld2] = useState<Piece|null>(null)
   const [holdUsed1,setHoldUsed1] = useState(false)
@@ -363,6 +368,51 @@ export default function GameBoard(){
     }, 450)
     return ()=>clearInterval(id)
   },[grid2, running2, queue2])
+
+  // Simple opponent AI: nudges piece toward lowest column, rotates occasionally, sometimes hard-drops
+  useEffect(()=>{
+    if(!running2 || gameOver) return
+    const aiId = setInterval(()=>{
+      const cur = piece2Ref.current
+      if(!cur) return
+
+      // compute column heights and pick the column with the lowest stack
+      const heights = Array(COLS).fill(ROWS)
+      for(let c=0;c<COLS;c++){
+        for(let r=0;r<ROWS;r++){
+          if(grid2[r][c]){ heights[c] = r; break }
+        }
+      }
+      let targetCol = 0
+      let best = -1
+      for(let c=0;c<COLS;c++){ if(heights[c] > best){ best = heights[c]; targetCol = c } }
+
+      // aim for center of piece roughly aligned to targetCol
+      const pieceCenter = Math.floor(cur.x + (cur.shape[0]?.length || 1)/2)
+
+      // if we are left of target, try move right; if right, try move left
+      if(pieceCenter < targetCol){
+        const moved = {...cur, x: cur.x+1}
+        if(!collide(grid2, moved)) { setPiece2AndRef(moved); return }
+      } else if(pieceCenter > targetCol){
+        const moved = {...cur, x: cur.x-1}
+        if(!collide(grid2, moved)) { setPiece2AndRef(moved); return }
+      }
+
+      // sometimes rotate
+      if(Math.random() < 0.18){ setPiece2AndRef(tryRotate(grid2, cur)); return }
+
+      // rarely hard-drop when aligned or randomly
+      if(Math.random() < 0.08 || Math.abs(pieceCenter - targetCol) <= 0){
+        let landing = {...cur}
+        while(!collide(grid2, {...landing, y: landing.y+1})) landing.y++
+        // use lockAndClear to handle clears/garbage/spawn
+        lockAndClear(2, landing)
+        return
+      }
+    }, 260)
+    return ()=> clearInterval(aiId)
+  },[grid2, running2, queue2, gameOver])
 
   // controls (WASD and Arrow keys both supported). Use pressedKeys to avoid OS auto-repeat
   // and perform immediate horizontal moves via piece1Ref + setPiece1AndRef to avoid race with gravity.
