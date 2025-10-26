@@ -83,6 +83,28 @@ export default function GameBoard(){
   const [piece1,setPiece1] = useState<Piece>(createStart())
   const [piece2,setPiece2] = useState<Piece>(createStart())
 
+  // refs to keep latest piece for immediate, race-free input updates
+  const piece1Ref = useRef<Piece>(piece1)
+  useEffect(()=>{ piece1Ref.current = piece1 }, [piece1])
+  function setPiece1AndRef(p:Piece){ piece1Ref.current = p; setPiece1(p) }
+
+  // opponent piece ref + setter (used by simple AI to avoid races)
+  const piece2Ref = useRef<Piece>(piece2)
+  useEffect(()=>{ piece2Ref.current = piece2 }, [piece2])
+  function setPiece2AndRef(p:Piece){ piece2Ref.current = p; setPiece2(p) }
+
+  // toggle to enable/disable simple AI (you can replace AI logic with your ML model)
+  const [aiEnabled, setAiEnabled] = useState(true)
+
+  // ML integration point (placeholder): your model can implement this function and return
+  // an action for the opponent. It's intentionally synchronous here; you can replace it
+  // with an async call to your model server or in-memory inference.
+  // Example return: { type: 'place', x: 3, rot: 1 } meaning aim for x=3 with rot state 1.
+  function chooseActionFromModel(observation:any){
+    // TODO: replace with ML model inference. For now return null to fall back to built-in AI.
+    return null
+  }
+
   const [held1,setHeld1] = useState<Piece|null>(null)
   const [held2,setHeld2] = useState<Piece|null>(null)
   const [holdUsed1,setHoldUsed1] = useState(false)
@@ -102,6 +124,15 @@ export default function GameBoard(){
   const [running2,setRunning2] = useState(true)
   const [gameOver,setGameOver] = useState(false)
   const [winner,setWinner] = useState<'player'|'opponent'|'draw'|null>(null)
+
+  // garbage progress: singles make progress toward a garbage row
+  const garbageProgress1 = useRef(0)
+  const garbageProgress2 = useRef(0)
+
+  // input helpers: horizontal repeat handling and pressed key guards
+  const horizontalInterval = useRef<number|undefined>(undefined)
+  const horizontalDir = useRef<'left'|'right'|null>(null)
+  const pressedKeys = useRef<Record<string, boolean>>({})
 
   // draw
   function draw(canvas:HTMLCanvasElement|null, grid:any[][], active?:Piece){
@@ -160,8 +191,13 @@ export default function GameBoard(){
 
   function lockAndClear(player:number, p:Piece){
     // compute garbage using guideline rules (basic: single/double/triple/tetris, combos, back-to-back, all clear)
-    function computeGarbageFor(player:number, cleared:number, newGrid:any[][]){
-      // base by cleared lines
+    function computeGarbageFor(player:number, cleared:number, newGrid:any[][], lockedPiece:Piece){
+      // mapping rules per spec:
+      // cleared=1 -> no immediate garbage, but progress +1 toward a garbage row
+      // cleared=2 -> send 1 row
+      // cleared=3 -> send 2 rows (aligned holes)
+      // cleared=4 -> send 4 rows (aligned holes)
+      // returns total rows to send and chosen hole column (for aligned holes)
       let base = 0
       let qualifiesB2B = false
       if(cleared===4){ base = 4; qualifiesB2B = true }
@@ -169,25 +205,32 @@ export default function GameBoard(){
       else if(cleared===2) base = 1
       else if(cleared===1) base = 0
 
-      // all clear detection
       const allClear = !newGrid.some((row:any[])=> row.some((cell:any)=>!!cell))
       if(allClear && cleared>0){ base += 7; qualifiesB2B = true }
 
-      // combo bonus rules: (simple mapping from guideline)
-      const comboRef = player===1 ? combo1 : combo2
-      let comboExtra = 0
-      if(comboRef.current>=2 && comboRef.current<=3) comboExtra = 1
-      else if(comboRef.current===4 || comboRef.current===5) comboExtra = 2
-      else if(comboRef.current>5) comboExtra = 2 + Math.floor((comboRef.current-4)/2)
+      // choose hole column informed by the locked piece position (center of piece), fallback to random
+      let holeCol: number | null = null
+      try{
+        const px = Math.floor(lockedPiece.x + (lockedPiece.shape[0]?.length || 1)/2)
+        holeCol = Math.max(0, Math.min(COLS-1, px))
+      } catch(e){ holeCol = Math.floor(Math.random()*COLS) }
 
-      // back-to-back bonus
-      const b2bRef = player===1 ? b2b1 : b2b2
-      let b2bExtra = 0
-      if(b2bRef.current && qualifiesB2B) b2bExtra = 1
+      // apply single-line progress accumulation: two singles => 1 garbage row
+      let totalToSend = base
+      if(cleared===1){
+        if(player===1) garbageProgress1.current += 1
+        else garbageProgress2.current += 1
+      }
 
-      const total = base + comboExtra + b2bExtra
-      const qualifies = qualifiesB2B
-      return { total, qualifies, allClear }
+      // convert progress into full rows (threshold 2 singles => 1 row)
+      const progRef = player===1 ? garbageProgress1 : garbageProgress2
+      if(progRef.current >= 2){
+        const extra = Math.floor(progRef.current / 2)
+        totalToSend += extra
+        progRef.current = progRef.current % 2
+      }
+
+      return { total: totalToSend, qualifies: qualifiesB2B, allClear, holeCol }
     }
 
     if(player===1){
@@ -196,8 +239,8 @@ export default function GameBoard(){
         const res = clearLines(ng)
         if(res.cleared) setScore1(s=>s + res.cleared*100)
 
-        const info = computeGarbageFor(1, res.cleared, res.grid)
-        if(info.total) receiveGarbage(2, info.total)
+  const info = computeGarbageFor(1, res.cleared, res.grid, p)
+  if(info.total) receiveGarbage(2, info.total, info.holeCol ?? undefined)
 
         // update combo and b2b refs
         if(res.cleared>0) combo1.current = combo1.current + 1
@@ -209,7 +252,7 @@ export default function GameBoard(){
       spawn(1)
       setTimeout(()=>{
         if(grid1[0].some((cell:any)=>!!cell)){
-          setRunning1(false); setGameOver(true); setWinner('opponent')
+          setRunning1(false); setRunning2(false); setGameOver(true); setWinner('opponent')
         }
         if(grid2[0].some((cell:any)=>!!cell)){
           setRunning1(false); setRunning2(false); setGameOver(true); setWinner('player')
@@ -221,8 +264,8 @@ export default function GameBoard(){
         const res = clearLines(ng)
         if(res.cleared) setScore2(s=>s + res.cleared*100)
 
-        const info = computeGarbageFor(2, res.cleared, res.grid)
-        if(info.total) receiveGarbage(1, info.total)
+  const info = computeGarbageFor(2, res.cleared, res.grid, p)
+  if(info.total) receiveGarbage(1, info.total, info.holeCol ?? undefined)
 
         if(res.cleared>0) combo2.current = combo2.current + 1
         else combo2.current = 0
@@ -233,7 +276,7 @@ export default function GameBoard(){
       spawn(2)
       setTimeout(()=>{
         if(grid2[0].some((cell:any)=>!!cell)){
-          setRunning2(false); setGameOver(true); setWinner('player')
+          setRunning1(false); setRunning2(false); setGameOver(true); setWinner('player')
         }
         if(grid1[0].some((cell:any)=>!!cell)){
           setRunning1(false); setRunning2(false); setGameOver(true); setWinner('opponent')
@@ -262,32 +305,61 @@ export default function GameBoard(){
     }
   }
 
-  function receiveGarbage(player:number, lines:number){
-    const make = ()=>{ const hole = Math.floor(Math.random()*COLS); return Array.from({length:COLS}, (_,i)=> i===hole?0:'G:#000') }
-    if(player===1) setGrid1(g=>{ const ng = g.map(r=>r.slice()); for(let i=0;i<lines;i++){ ng.shift(); ng.push(make()) } return ng })
-    else setGrid2(g=>{ const ng = g.map(r=>r.slice()); for(let i=0;i<lines;i++){ ng.shift(); ng.push(make()) } return ng })
+  function receiveGarbage(player:number, lines:number, holeCol?:number){
+    const make = (hole:number)=> Array.from({length:COLS}, (_,i)=> i===hole?0:'G:#888888')
+    if(player===1) setGrid1(g=>{
+      const ng = g.map(r=>r.slice())
+      const hole = (typeof holeCol==='number' && holeCol>=0 && holeCol<COLS) ? holeCol : Math.floor(Math.random()*COLS)
+      for(let i=0;i<lines;i++){ ng.shift(); ng.push(make(hole)) }
+      // defensive: ensure each pushed garbage row has at least one hole
+      for(let r=ng.length-lines;r<ng.length;r++){
+        const row = ng[r]
+        if(!row.some((cell:any)=>!cell)){
+          // no hole found — force one
+          const fixIdx = Math.max(0, Math.min(COLS-1, hole))
+          row[fixIdx] = 0
+          console.warn('[receiveGarbage] forced hole at', fixIdx, 'for player 1')
+        }
+      }
+      return ng
+    })
+    else setGrid2(g=>{
+      const ng = g.map(r=>r.slice())
+      const hole = (typeof holeCol==='number' && holeCol>=0 && holeCol<COLS) ? holeCol : Math.floor(Math.random()*COLS)
+      for(let i=0;i<lines;i++){ ng.shift(); ng.push(make(hole)) }
+      for(let r=ng.length-lines;r<ng.length;r++){
+        const row = ng[r]
+        if(!row.some((cell:any)=>!cell)){
+          const fixIdx = Math.max(0, Math.min(COLS-1, hole))
+          row[fixIdx] = 0
+          console.warn('[receiveGarbage] forced hole at', fixIdx, 'for player 2')
+        }
+      }
+      return ng
+    })
     // check top rows after applying garbage
     setTimeout(()=>{
-      if(player===1){ if(grid1[0].some((cell:any)=>!!cell)){ setRunning1(false); setGameOver(true); setWinner('opponent') } }
+      if(player===1){ if(grid1[0].some((cell:any)=>!!cell)){ setRunning1(false); setRunning2(false); setGameOver(true); setWinner('opponent') } }
       else { if(grid2[0].some((cell:any)=>!!cell)){ setRunning1(false); setRunning2(false); setGameOver(true); setWinner('player') } }
     }, 0)
   }
 
-  // gravity simple
+  // gravity simple (use ref-based piece updates to avoid race with input)
   useEffect(()=>{
     if(!running1) return
     const speed = softDrop1 ? 50 : 450
     const id = setInterval(()=>{
-      setPiece1(prev=>{
-        const moved = {...prev, y: prev.y+1}
-        if(collide(grid1, moved)){
-          lockAndClear(1, prev)
-          const st = {...(queue1[0] || randomTetromino()), x:3, y:-2}
-          if(collide(grid1, st)) setRunning1(false)
-          return st
-        }
-        return moved
-      })
+      const prev = piece1Ref.current
+      const moved = {...prev, y: prev.y+1}
+      if(collide(grid1, moved)){
+        // lock the previous piece and spawn next (use ref current to avoid races)
+        lockAndClear(1, prev)
+        const st = {...(queue1[0] || randomTetromino()), x:3, y:-2}
+        if(collide(grid1, st)) setRunning1(false)
+        setPiece1AndRef(st)
+      } else {
+        setPiece1AndRef(moved)
+      }
     }, speed)
     return ()=>clearInterval(id)
   },[grid1, running1, queue1, softDrop1])
@@ -309,70 +381,190 @@ export default function GameBoard(){
     return ()=>clearInterval(id)
   },[grid2, running2, queue2])
 
-  // controls (WASD and Arrow keys both supported). Prevent default for space/arrow to stop page scroll.
+  // Smarter opponent AI: search rotations & x positions, evaluate placements with a heuristic,
+  // then execute moves toward the best placement. Replace this block with an ML model by
+  // calling `chooseActionFromModel(observation)` (see placeholder below).
   useEffect(()=>{
+    if(!running2 || gameOver || !aiEnabled) return
+
+    function scorePlacement(g:any[][], placed:Piece){
+      const ng = lockPieceToGrid(g, placed)
+      const res = clearLines(ng)
+      const heights = Array(COLS).fill(0)
+      for(let c=0;c<COLS;c++){
+        for(let r=0;r<ROWS;r++){
+          if(res.grid[r][c]){ heights[c] = ROWS - r; break }
+        }
+      }
+      const aggregate = heights.reduce((a,b)=>a+b,0)
+      let holes = 0
+      for(let c=0;c<COLS;c++){
+        let filledSeen = false
+        for(let r=0;r<ROWS;r++){
+          if(res.grid[r][c]) filledSeen = true
+          else if(filledSeen) holes++
+        }
+      }
+      return (res.cleared * 1000) - aggregate - (holes * 50)
+    }
+
+    const aiId = setInterval(()=>{
+      const cur = piece2Ref.current
+      if(!cur) return
+
+      let bestScore = -Infinity
+      let bestPlacement: {x:number, rot:number, placed?:Piece} | null = null
+      let shape = cur.shape
+      for(let rot=0; rot<4; rot++){
+        for(let x=-2; x<=COLS; x++){
+          const testPiece: Piece = { key: cur.key, shape, x, y: cur.y }
+          if(collide(grid2, testPiece)) continue
+          let landing = {...testPiece}
+          while(!collide(grid2, {...landing, y: landing.y+1})) landing.y++
+          const sc = scorePlacement(grid2, landing)
+          if(sc > bestScore){ bestScore = sc; bestPlacement = { x, rot, placed: landing } }
+        }
+        shape = rotate(shape)
+      }
+
+      if(!bestPlacement || !bestPlacement.placed) return
+      const targetX = bestPlacement.placed.x
+
+      const curX = cur.x
+      if(curX < targetX){ const moved = {...cur, x: cur.x+1}; if(!collide(grid2,moved)) { setPiece2AndRef(moved); return } }
+      if(curX > targetX){ const moved = {...cur, x: cur.x-1}; if(!collide(grid2,moved)) { setPiece2AndRef(moved); return } }
+
+      const rotated = tryRotate(grid2, cur)
+      if(JSON.stringify(rotated.shape) !== JSON.stringify(cur.shape)) { setPiece2AndRef(rotated); return }
+
+      let landing = {...cur}
+      while(!collide(grid2, {...landing, y: landing.y+1})) landing.y++
+      lockAndClear(2, landing)
+    }, 200)
+
+    return ()=> clearInterval(aiId)
+  },[grid2, running2, queue2, gameOver, aiEnabled])
+
+  // controls (WASD and Arrow keys both supported). Use pressedKeys to avoid OS auto-repeat
+  // and perform immediate horizontal moves via piece1Ref + setPiece1AndRef to avoid race with gravity.
+  useEffect(()=>{
+    function startHorizontalRepeat(dir:'left'|'right'){
+      window.clearInterval(horizontalInterval.current)
+      horizontalInterval.current = window.setInterval(()=>{
+        const cur = piece1Ref.current
+        const moved = {...cur, x: cur.x + (dir==='left' ? -1 : 1)}
+        if(!collide(grid1, moved)) setPiece1AndRef(moved)
+      }, 120) as unknown as number
+    }
+
+    function stopHorizontalRepeat(){
+      if(horizontalInterval.current) { window.clearInterval(horizontalInterval.current); horizontalInterval.current = undefined }
+      horizontalDir.current = null
+    }
+
     function onKey(e:KeyboardEvent){
       if(!running1) return
       const raw = e.key
       const k = typeof raw === 'string' ? raw.toLowerCase() : raw
-      // prevent default for space and arrow keys
       if(k === ' ' || k.startsWith('arrow')) e.preventDefault()
 
+      // left
       if(k==='a' || k==='arrowleft'){
-        setPiece1(prev=>{ const moved = {...prev, x: prev.x-1}; if(collide(grid1,moved)) return prev; return moved })
-      } else if(k==='d' || k==='arrowright'){
-        setPiece1(prev=>{ const moved = {...prev, x: prev.x+1}; if(collide(grid1,moved)) return prev; return moved })
-      } else if(k==='s' || k==='arrowdown'){
-        // start soft drop
+        if(pressedKeys.current['left']) return
+        pressedKeys.current['left'] = true
+        horizontalDir.current = 'left'
+        const cur = piece1Ref.current
+        const moved = {...cur, x: cur.x-1}
+        if(!collide(grid1, moved)) setPiece1AndRef(moved)
+        startHorizontalRepeat('left')
+      }
+      // right
+      else if(k==='d' || k==='arrowright'){
+        if(pressedKeys.current['right']) return
+        pressedKeys.current['right'] = true
+        horizontalDir.current = 'right'
+        const cur = piece1Ref.current
+        const moved = {...cur, x: cur.x+1}
+        if(!collide(grid1, moved)) setPiece1AndRef(moved)
+        startHorizontalRepeat('right')
+      }
+      // soft drop
+      else if(k==='s' || k==='arrowdown'){
+        if(pressedKeys.current['down']) return
+        pressedKeys.current['down'] = true
         setSoftDrop1(true)
-        // immediate small step for responsiveness
-        setPiece1(prev=>{ const moved = {...prev, y: prev.y+1}; if(collide(grid1,moved)) return prev; return moved })
-      } else if(k==='w' || k==='arrowup'){
-        setPiece1(prev=> tryRotate(grid1, prev))
-      } else if(k===' '){
-        // hard drop implemented synchronously to immediately show next piece
-        // compute landing
-        const p = piece1
+      }
+      // rotate
+      else if(k==='w' || k==='arrowup'){
+        if(pressedKeys.current['up']) return
+        pressedKeys.current['up'] = true
+        setPiece1AndRef(tryRotate(grid1, piece1Ref.current))
+      }
+      // hard drop
+      else if(k===' '){
+        const p = piece1Ref.current
         let landing = {...p}
         while(!collide(grid1, {...landing, y: landing.y+1})) landing.y++
-        // lock and clear synchronously (functional update)
-        setGrid1(g=>{
-          const ng = lockPieceToGrid(g, landing)
-          const res = clearLines(ng)
-          if(res.cleared) setScore1(s=>s + res.cleared*100)
-          // compute garbage using existing lockAndClear logic
-          // small inline compute (reuse computeGarbageFor from lockAndClear area if needed)
-          // send simple garbage equal to cleared for now (detailed computed in lockAndClear path)
-          if(res.cleared) receiveGarbage(2, res.cleared)
-          return res.grid
-        })
-        // advance queue immediately
-        setQueue1(q=>{
-          const [, ...rest] = q
-          const next = {...rest[0] || randomTetromino(), x:3, y:-2}
-          setPiece1(next)
-          setHoldUsed1(false)
-          return [...rest, {...randomTetromino(), x:3, y:-2}]
-        })
-      } else if(k==='c'){
-        setPiece1(prev=>{
-          if(holdUsed1) return prev
-          setHoldUsed1(true)
-          if(!held1){ setHeld1({...prev, x:0,y:0}); const st = {...(queue1[0]||randomTetromino()), x:3,y:-2}; setPiece1(st); return st }
-          const h = held1; setHeld1({...prev, x:0,y:0}); const st = {...h, x:3,y:-2}; setPiece1(st); return st
-        })
+
+        // compute new grid synchronously so we can detect immediate game over
+        const ng = lockPieceToGrid(grid1, landing)
+        const res = clearLines(ng)
+        if(res.cleared) setScore1(s=>s + res.cleared*100)
+        if(res.cleared) receiveGarbage(2, res.cleared)
+
+        // if the top row now has blocks, end the game immediately instead of spawning
+        const topFilled = res.grid[0].some((cell:any)=> !!cell)
+        setGrid1(res.grid)
+        if(topFilled){
+          setRunning1(false)
+          setRunning2(false)
+          setGameOver(true)
+          setWinner('opponent')
+        } else {
+          setQueue1(q=>{
+            const [, ...rest] = q
+            const next = {...rest[0] || randomTetromino(), x:3, y:-2}
+            setPiece1AndRef(next)
+            setHoldUsed1(false)
+            return [...rest, {...randomTetromino(), x:3, y:-2}]
+          })
+        }
+      }
+      // hold
+      else if(k==='c'){
+        // use ref-based swap to avoid races with soft-drop/gravity
+        const cur = piece1Ref.current
+        if(holdUsed1) return
+        setHoldUsed1(true)
+        if(!held1){ setHeld1({...cur, x:0,y:0}); const st = {...(queue1[0]||randomTetromino()), x:3,y:-2}; setPiece1AndRef(st); return }
+        const h = held1
+        setHeld1({...cur, x:0,y:0})
+        const st = {...h, x:3,y:-2}
+        setPiece1AndRef(st)
       }
     }
 
     function onKeyUp(e:KeyboardEvent){
       const k = (typeof e.key === 'string') ? e.key.toLowerCase() : e.key
-      if(k==='s' || k==='arrowdown') setSoftDrop1(false)
+      if(k==='s' || k==='arrowdown'){
+        pressedKeys.current['down'] = false
+        setSoftDrop1(false)
+      }
+      if(k==='a' || k==='arrowleft'){
+        pressedKeys.current['left'] = false
+        stopHorizontalRepeat()
+      }
+      if(k==='d' || k==='arrowright'){
+        pressedKeys.current['right'] = false
+        stopHorizontalRepeat()
+      }
+      if(k==='w' || k==='arrowup') pressedKeys.current['up'] = false
     }
 
     window.addEventListener('keydown', onKey, { passive: false })
     window.addEventListener('keyup', onKeyUp)
-    return ()=>{ window.removeEventListener('keydown', onKey); window.removeEventListener('keyup', onKeyUp) }
-  },[grid1, running1, held1, holdUsed1, queue1, piece1])
+    return ()=>{ window.removeEventListener('keydown', onKey); window.removeEventListener('keyup', onKeyUp); stopHorizontalRepeat() }
+  },[grid1, running1, held1, holdUsed1, queue1])
 
   // previews
   function PiecePreview({p, size=64}:{p:Piece|null, size?:number}){
@@ -389,7 +581,7 @@ export default function GameBoard(){
 
   return (
     <div>
-      <div style={{marginBottom:8}}>
+      <div style={{marginBottom:8, display:'flex', gap:8, alignItems:'center'}}>
         <button onClick={()=>{
           setGrid1(makeEmptyGrid()); setGrid2(makeEmptyGrid());
           setQueue1(createQueue()); setQueue2(createQueue());
@@ -397,6 +589,8 @@ export default function GameBoard(){
           setHeld1(null); setHeld2(null); setHoldUsed1(false); setHoldUsed2(false);
           setScore1(0); setScore2(0); setRunning1(true); setRunning2(true); setGameOver(false); setWinner(null)
         }}>Restart</button>
+        <button onClick={()=> setAiEnabled(e=>!e)} style={{padding:'6px 10px'}}>{aiEnabled ? 'AI: On' : 'AI: Off'}</button>
+        <div style={{fontSize:12,color:'#888'}} aria-hidden>AI toggle for testing (replace AI in code with your ML model)</div>
       </div>
 
       <div style={{display:'flex', gap:24, alignItems:'flex-start'}}>
