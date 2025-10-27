@@ -149,6 +149,7 @@ export default function GameBoard(){
 
   // soft drop, combos and back-to-back tracking
   const [softDrop1, setSoftDrop1] = useState(false)
+  const [softDrop2, setSoftDrop2] = useState(false)
   const combo1 = useRef(0)
   const combo2 = useRef(0)
   const b2b1 = useRef(false)
@@ -170,6 +171,9 @@ export default function GameBoard(){
   const horizontalInterval = useRef<number|undefined>(undefined)
   const horizontalDir = useRef<'left'|'right'|null>(null)
   const pressedKeys = useRef<Record<string, boolean>>({})
+  const horizontalInterval2 = useRef<number|undefined>(undefined)
+  const horizontalDir2 = useRef<'left'|'right'|null>(null)
+  const pressedKeys2 = useRef<Record<string, boolean>>({})
 
   // draw
   function draw(canvas:HTMLCanvasElement|null, grid:any[][], active?:Piece){
@@ -409,6 +413,7 @@ export default function GameBoard(){
 
   useEffect(()=>{
     if(!running2) return
+    const speed = softDrop2 ? 50 : 450
     const id = setInterval(()=>{
       setPiece2(prev=>{
         const moved = {...prev, y: prev.y+1}
@@ -420,9 +425,9 @@ export default function GameBoard(){
         }
         return moved
       })
-    }, 450)
+    }, speed)
     return ()=>clearInterval(id)
-  },[grid2, running2, queue2])
+  },[grid2, running2, queue2, softDrop2])
 
   // Smarter opponent AI: search rotations & x positions, evaluate placements with a heuristic,
   // then execute moves toward the best placement. Replace this block with an ML model by
@@ -618,6 +623,137 @@ export default function GameBoard(){
     return ()=>{ window.removeEventListener('keydown', onKey); window.removeEventListener('keyup', onKeyUp); stopHorizontalRepeat() }
   },[grid1, running1, held1, holdUsed1, queue1])
 
+  // second-player controls (numpad). When AI is off, the numpad emulates the opponent.
+  useEffect(()=>{
+    function startHorizontalRepeat2(dir:'left'|'right'){
+      window.clearInterval(horizontalInterval2.current)
+      horizontalInterval2.current = window.setInterval(()=>{
+        const cur = piece2Ref.current
+        const moved = {...cur, x: cur.x + (dir==='left' ? -1 : 1)}
+        if(!collide(grid2, moved)) setPiece2AndRef(moved)
+      }, 120) as unknown as number
+    }
+
+    function stopHorizontalRepeat2(){
+      if(horizontalInterval2.current) { window.clearInterval(horizontalInterval2.current); horizontalInterval2.current = undefined }
+      horizontalDir2.current = null
+    }
+
+    function isNumpad(code:string, key?:string){
+      // prefer code checks for numpad keys, fallback to key matching if necessary
+      return (code && code.startsWith('Numpad')) || (key && key.length && ['*'].includes(key))
+    }
+
+    function onKey2(e:KeyboardEvent){
+      if(aiEnabled) return // when AI is enabled, ignore human numpad input
+      if(!running2) return
+      const raw = e.key
+      const k = typeof raw === 'string' ? raw : raw
+      const code = (e as any).code || ''
+      // map using code where possible
+      // rotate: Numpad8
+      if(code === 'Numpad8' || k === '8'){
+        if(pressedKeys2.current['up']) return
+        pressedKeys2.current['up'] = true
+        setPiece2AndRef(tryRotate(grid2, piece2Ref.current))
+      }
+      // soft drop: Numpad9
+      else if(code === 'Numpad9' || k === '9'){
+        if(pressedKeys2.current['down']) return
+        pressedKeys2.current['down'] = true
+        setSoftDrop2(true)
+      }
+      // left: Numpad6
+      else if(code === 'Numpad6' || k === '6'){
+        if(pressedKeys2.current['left']) return
+        pressedKeys2.current['left'] = true
+        horizontalDir2.current = 'left'
+        const cur = piece2Ref.current
+        const moved = {...cur, x: cur.x-1}
+        if(!collide(grid2, moved)) setPiece2AndRef(moved)
+        startHorizontalRepeat2('left')
+      }
+      // right: NumpadMultiply or '*'
+      else if(code === 'NumpadMultiply' || k === '*'){
+        if(pressedKeys2.current['right']) return
+        pressedKeys2.current['right'] = true
+        horizontalDir2.current = 'right'
+        const cur = piece2Ref.current
+        const moved = {...cur, x: cur.x+1}
+        if(!collide(grid2, moved)) setPiece2AndRef(moved)
+        startHorizontalRepeat2('right')
+      }
+      // hard drop: NumpadEnter or Enter
+      else if(code === 'NumpadEnter' || k === 'Enter'){
+        e.preventDefault()
+        const p = piece2Ref.current
+        let landing = {...p}
+        while(!collide(grid2, {...landing, y: landing.y+1})) landing.y++
+
+        const ng = lockPieceToGrid(grid2, landing)
+        const res = clearLines(ng)
+        if(res.cleared) setScore2(s=>s + res.cleared*100)
+        if(res.cleared) setTimeout(()=> receiveGarbage(1, res.cleared), 500)
+
+        const topFilled = res.grid[0].some((cell:any)=> !!cell)
+        setGrid2(res.grid)
+        if(topFilled){
+          setRunning1(false); setRunning2(false); setGameOver(true); setWinner('player')
+        } else {
+          setQueue2(q=>{
+            const [, ...rest] = q
+            const lastKey = q[q.length-1]?.key
+            const candidate = rest[0] ? {...rest[0], x:3, y:-2} : createQueue(1, lastKey)[0]
+            setPiece2AndRef({...candidate})
+            setHoldUsed2(false)
+            const appendAvoid = (rest.length>0 ? rest[rest.length-1].key : candidate.key)
+            const append = {...createQueue(1, appendAvoid)[0], x:3, y:-2}
+            return [...rest, append]
+          })
+        }
+      }
+      // hold: NumpadDecimal or '.'
+      else if(code === 'NumpadDecimal' || k === '.'){
+        const cur = piece2Ref.current
+        if(holdUsed2) return
+        setHoldUsed2(true)
+        if(!held2){
+          setHeld2({...cur, x:0,y:0})
+          const fallback = queue2[0] || createQueue(1, queue2[queue2.length-1]?.key)[0]
+          const st = {...fallback, x:3, y:-2}
+          setPiece2AndRef(st)
+          return
+        }
+        const h = held2
+        setHeld2({...cur, x:0,y:0})
+        const st = {...h, x:3,y:2}
+        setPiece2AndRef(st)
+      }
+    }
+
+    function onKey2Up(e:KeyboardEvent){
+      const k = (typeof e.key === 'string') ? e.key : e.key
+      const code = (e as any).code || ''
+      if(code === 'Numpad9' || k === '9'){
+        pressedKeys2.current['down'] = false
+        setSoftDrop2(false)
+      }
+      if(code === 'Numpad6' || k === '6'){
+        pressedKeys2.current['left'] = false
+        stopHorizontalRepeat2()
+      }
+      if(code === 'NumpadMultiply' || k === '*'){
+        pressedKeys2.current['right'] = false
+        stopHorizontalRepeat2()
+      }
+      if(code === 'Numpad8' || k === '8') pressedKeys2.current['up'] = false
+    }
+
+    window.addEventListener('keydown', onKey2, { passive: false })
+    window.addEventListener('keyup', onKey2Up)
+    return ()=>{ window.removeEventListener('keydown', onKey2); window.removeEventListener('keyup', onKey2Up); stopHorizontalRepeat2() }
+  },[grid2, running2, held2, holdUsed2, queue2, aiEnabled])
+
   // previews
   function PiecePreview({p, size=64}:{p:Piece|null, size?:number}){
     const cell = Math.floor(size/4)
@@ -643,7 +779,7 @@ export default function GameBoard(){
           setScore1(0); setScore2(0); setRunning1(true); setRunning2(true); setGameOver(false); setWinner(null)
         }}>Restart</button>
         <button onClick={()=> setAiEnabled(e=>!e)} style={{padding:'6px 10px'}}>{aiEnabled ? 'AI: On' : 'AI: Off'}</button>
-        <div style={{fontSize:12,color:'#888'}} aria-hidden>AI toggle for testing (replace AI in code with your ML model)</div>
+        <div style={{fontSize:12,color:'#888'}} aria-hidden></div>
       </div>
 
       <div style={{display:'flex', gap:24, alignItems:'flex-start'}}>
